@@ -1,0 +1,5088 @@
+%{
+/*************************************************************/
+/*                                                           */
+/* do morphology; adapted from t4001; new stuff:             */
+/*   src par of MMl                                          */
+/*   unknown word handling based on data from b4023          */
+/* <MMl> / <MMt> output according to final a0022.dtd!!       */
+/* update of <l>,<t> if present in input (if requested)      */
+/* parametric version                                        */
+/*                                                           */
+/* input may contain <l>, <t>, <R>, <E>, <Ct> etc. tags      */
+/* <R>, <E>, <Ct> replaced/created if respective output      */
+/*               is requested (RootOut, EndOut, AllTags      */
+/*               otherwise, deleted                          */
+/* <l>+<t> handling:                                         */
+/*                    LemmaTagUpdate=y   otherwise           */
+/* <l> in input:          updated         copied+warnings    */
+/* <l> not in input:      created         created            */
+/*                                                           */
+/* Input must be in ISO LAtin code (2 works for sure,        */
+/*    hopefully also ISO LAtin1,3,4,... simulated as L2      */
+/*                                                           */
+/*                                                           */
+/* based on i4001/t4001 (derivation dict. needed)            */
+/*                                                           */
+/* (C) Jan Hajic 23.09.01                                    */
+/* (C) Jan Hajic 05.06.01                                    */
+/* (C) Jan Hajic 11.04.98                                    */
+/* (C) Jan Hajic 23.03.98                                    */
+/* (C) Jan Hajic 23.09.97                                    */
+/* (C) Jan Hajic 12.09.97                                    */
+/* (C) Jan Hajic 03.05.97                                    */
+/* (C) Jan Hajic 07.08.97                                    */
+/*                                                           */
+/*************************************************************/
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
+time_t tTime; /* for mdate output */
+
+#include "proto.h"
+#include "hb_proto.h"
+#include "hf_modd.h"
+
+#include "hb_base.h"
+#include "hb_il2ca.h"
+#include "hb_arg.h"
+#include "hb_hash.h"
+#include "hb_cpd.h"
+
+#define alloc malloc
+
+#ifdef unix
+int yywrap() { return 1; }
+#else
+#define fileno(f) ((f)->fd)
+#endif
+
+
+#define LTSTRINGMAX 20000
+
+char szPN[200];
+
+char szT[LTSTRINGMAX];
+char *pch;
+
+#define MPHINOUT_LB "<l>"
+#define MPHINOUT_RB ""
+#define MPHINOUT_AS "<l>"
+#define MPHINOUT_TAG "<t>"
+#define MPHOUT_LB "<MMl src=\"ad\">"
+#define MPHOUT_RB ""
+#define MPHOUT_AS "<MMl>"
+#define MPHOUT_TAG "<MMt src=\"ad\">"
+#define MPHOUT_PATTERN "<pn>"
+#define MPHMD_LB "<MDl>"
+#define MPHMD_RB ""
+#define MPHMD_AS "<MDl>"
+#define MPHMD_TAG "<MDt>"
+#define MPHOUT_SEG_ROOT "<R>"
+#define MPHOUT_SEG_END "<E>"
+#define MPHOUT_NMATAG "NOMORPH"
+#define MPHOUT_NMATAG1 "NOMORPH1"
+#define AMBCLASSTAG "<Ct>"
+#define TAGELEMEND "/"
+#define LTMARKNF "_(?)"
+#define TOTALLYUNKCHARID 'u'
+#define TAGUNKCHARID 'x'
+#define UNKRULESEP '/'
+#define SGMLLRTSUFFREF "sr"
+#define SGMLLRT "lrt"
+#define SGMLLRTREF "x"
+
+/* #define MPHOUT_WX ""  */
+/* #define MPHOUT_NL_LGT 1 */
+
+/* #define HH_LB "\n\t" */
+/* #define HH_RB "" */
+/* #define HH_WX "~" */
+/* #define HH_AS "\n\t" */
+/* #define HH_NL_LGT 1 */
+
+/* #define HH_LB "!" */
+/* #define HH_RB "=" */
+/* #define HH_WX "³" */
+/* #define HH_AS "/" */
+/* #define HH_NL_LGT 2 */
+
+int iRC; /* main return code */
+
+typedef struct unkRec { /* unknown word handling based on b4023 data */
+  hb_cpdRecType *pcpdUnk; /* unknown word pref/suff file */
+  int cPrefMax; /* max prefix length */
+  int cSuffMax; /* max suffix length */
+  char szLF[HB_LONGSTRINGMAX]; /* lowest level default LT rule */
+  int cMMt; /* size of MMt table */
+  char **rgszMMt; /* MMt table; allocated if file present */
+  int cLRT; /* size of LRT table */
+  char **rgszLRT; /* LRT table; allocated if file present */
+  char szFullData[HB_LONGSTRINGMAX]; /* for direct data, such as mfq tag */
+} unkRecType;
+
+typedef struct parRec {
+  int fRoot; /* output root within a separate tag: MPHOUT_SEG_ROOT */
+  int fEnding; /* output ending within a separate tag: MPHOUT_SEG_OUT */
+  int fAllTags; /* output all tags into a unique set, from morphology,
+                    AMBCLASSTAG */
+  int fLemmaTagUpdate; /* output lemma/tag according to input lemma/tag:
+                    disambiguate if possible
+                    do it for lines containing input lemma/tag,
+                    otherwise normal output
+                    */
+  int fForceLemmaUpdate; /* active only if fLemmaTagUpdate:
+                    force updated lemma output (<l>) even in not found
+                    in morphology output: take first lemma from <MMl>
+                    */
+  int fReportLTU; /* report if update req. but no lemma in input */
+  int fMDCopy; /* if set & if MDl/MDt tags in input, copy them to output;
+                  otherwise no MDl/MDt output even if in input */
+  char szVarDelAlways[HB_STRINGMAX]; 
+             /* always delete variant letters (digits) */
+  char szVarDelIfExtra[HB_STRINGMAX]; 
+             /* del variant letters (digits) if normal tags */
+  char szLexDelAlways[HB_STRINGMAX]; 
+             /* always delete lemma for sss letters (digits) */
+  char szLexDelIfExtra[HB_STRINGMAX];
+             /* del lemma if sss let. (digits) if other res */
+  char szStyleOut[HB_STRINGMAX]; 
+             /* string of letters to output after style tag */
+  char szStyleSep[HB_STRINGMAX]; /* style "tag" */
+  char szSemOut[HB_STRINGMAX]; /* string of letters to output after sem tag */
+  char szSemSep[HB_STRINGMAX]; /* semantics abbr "tag" */
+  char szSyntOut[HB_STRINGMAX];  
+             /* string of letters to output after synt tag */
+  char szSyntSep[HB_STRINGMAX];  /* synt abbr "tag" */
+  char szDescSep[HB_STRINGMAX];  /* desciption info "tag" */
+  char szDescOut[HB_STRINGMAX]; /* TMP description output? y, yes, 1 */
+  int fDescOut; /* desc output flag */
+  char szPatternsOut[HB_STRINGMAX]; /* pattern [pairs] out? y, yes, 1 */
+  int fPatternsOut; /* patetrn name pair output flag */
+  /* caching: */
+  char szBaseCache[HB_STRINGMAX]; /* initial cache file name */
+  hb_hashRecType *phashBaseCache; /* base hash table, data: result directly! */
+  char szCacheEntries[HB_STRINGMAX]; /* cache size in lines from arg file */
+  longint clCacheEntries; /* dtto in long int representaton; */
+  longint ilCachedResultFree;
+  char **rgszCachedResults; /* size: lCacheEntries., allocated dyn. */
+                      /* strings to be output as pszOutput in lemmatize */
+  hb_hashRecType *phashCache; /* hash table of input strings, data: index
+                                 to rgszResults to #of results */
+  longint clCacheQueries;
+  longint clBaseCacheHits;
+  longint clCacheHits;
+  /* input/output code page (charset): */
+  char szCharSet[HB_STRINGMAX]; /* supported: iso-8859-2, cp895 */
+  char szXFFile[HB_STRINGMAX]; /* filename for X-tagged output */
+  FILE *fXF;  /* for X-tagged output */
+  char szTagTable[HB_STRINGMAX]; /* filename for output tag conversion table */
+  hb_hashRecType *phashTagTable; /* tag hash table */
+  hb_hashRecType *phashInvTagTable; /* tag hash table, inverted */
+  unkRecType *punk; /* unknown word handling structure pointer */
+  tlangEnvRec langEnvDic; /* language env. of dictionary, incl. prefixes */
+} parRecType;
+
+parRecType *pparMain;
+
+/**/ char szTC[40]; /**/
+
+#define LOGFILENAME "Log"
+FILE *fLog;
+char szLogName[HB_STRINGMAX];
+#define DICTIONARY "Dictionary"
+char szDictionary[HB_STRINGMAX]; /* dictionary name base for hf_init */
+#define NFFILENAME "NF"
+FILE * fNF; /* not found words output file */
+char szNFName[HB_STRINGMAX]; /* not found file name */
+
+#define VARDELALWAYS "VarDelAlways"
+#define VARDELIFEXTRA "VarDelIfExtra"
+#define LEXDELALWAYS "LexDelAlways"
+#define LEXDELIFEXTRA "LexDelIfExtra"
+#define STYLEOUT "StyleOut"
+#define STYLESEP "StyleSep"
+#define SEMOUT "SemOut"
+#define SEMSEP "SemSep"
+#define SYNTOUT "SyntOut"
+#define SYNTSEP "SyntSep"
+#define DESCSEP "DescSep"
+#define DESCOUT "DescOut"
+#define CACHEENTRIES "CacheEntries"
+#define BASECACHE "BaseCache"
+#define ARGROOT "RootOut"
+#define ARGEND "EndOut"
+#define ARGALLTAGS "AllTags"
+#define ARGLEMMATAGUPDATE "LemmaTagUpdate"
+#define ARGFORCELEMMAUPDATE "ForceLemmaUpdate"
+#define ARGMDCOPY "MDCopy"
+#define ARGREPORTLTU "ReportLTU"
+#define CHARSET "CharSet"
+#define TAGTABLE "TagTable"
+#define PATTERNSOUT "PatternsOut"
+#define XFFILENAME "XF"
+#define UNKNOWNRULES "UnknownRules"
+
+#define MCF_MAXINFO 30200
+#define MCF_MAXLEXINFO HF_MAXNO_LEMMAS
+
+#define FLAGNOTDEL 0
+#define FLAGDELCOND 1
+#define FLAGDELALWAYS 2
+
+typedef struct lexRecItem {
+     /* ptrs to szArea */
+  char *pszPat;
+  int cEndSegmentLength;
+  char fDelLexItem;
+  int cTags;
+  char *rgpszTag[HF_MAXNO_TAGS];
+  char *rgpszPat[HF_MAXNO_TAGS]; /* 2000/11/02 hajic */
+  char rgfDelTag[HF_MAXNO_TAGS];
+#ifdef HF_UPDATE
+  int rgfTagDisamb[HF_MAXNO_TAGS];
+#endif
+  char *pszDesc;
+  char *pszSynt;
+  char *pszSem;
+  char *pszStyle;
+} lexRecItemType;
+
+typedef struct lexRec {
+  char *pszLem;
+#ifdef HF_UPDATE
+  int fLemDisamb;
+#endif
+  char *pszForm; /* only ptr to szFormIn! */
+  int cItems;
+  lexRecItemType rglexItem[MCF_MAXLEXINFO];
+  int iAreaFree;
+  char szArea[MCF_MAXINFO];
+} lexRecType;
+
+#define FreeString(plexRec) plexRec->szArea + plexRec->iAreaFree 
+#define CloseString(plexRec) plexRec->szArea[plexRec->iAreaFree++] = HB_EOS
+
+unsigned char szFormIn[200];
+char szMorph[HF_MAXRESULT];
+char szAmb[HF_MAXRESULT];
+
+typedef struct AmbClassRec {
+  int cTags;
+  char *rgTags[HF_MAXNO_RESULTS];
+  char szTags[HF_MAXRESULT];
+  int iTagFree;
+} AmbClassRecType;
+
+#ifdef HF_UPDATE
+typedef struct LemmaTagRec {
+  char *pszAmbClass;
+  int irgLemmaFree;
+  int rgLemmaFirstTag[HF_MAXNO_LEMMAS];
+  char *rgLemma[HF_MAXNO_LEMMAS];
+  char *rgLemmaDesc[HF_MAXNO_LEMMAS];
+  char *rgRoot[HF_MAXNO_LEMMAS];
+  char *rgEnd[HF_MAXNO_LEMMAS];
+  int irgMDLemmaFree;
+  int rgMDLemmaFirstTag[HF_MAXNO_LEMMAS];
+  char *rgMDLemma[HF_MAXNO_LEMMAS];
+  char *rgMDRoot[HF_MAXNO_LEMMAS];
+  char *rgMDEnd[HF_MAXNO_LEMMAS];
+  int irgTagFree;
+  char *rgTags[HF_MAXNO_RESULTS];
+  int iszAreaFree;
+  char szArea[HF_MAXRESULT];
+  char szCopyOnly[HF_MAXRESULT];
+} LemmaTagRecType;
+#endif
+
+PROTO(int AddChar, (unsigned char *szTo, char ch, int *cAct, int cToMax));
+
+PROTO(int AddToIntStruct, (unsigned char *pszLemmaIn, unsigned char *pszFormIn,
+                          parRecType *par, lexRecType *plex));
+
+PROTO(int SprintCesFormat, (char *pszOut, lexRecType *plex,
+                          lexRecItemType *plexItem,
+                          parRecType *ppar, int fOutTag, int fAll));
+
+PROTO(int MakeAmbClass, (AmbClassRecType *, char *));
+
+PROTO(int ConvertTag, (parRecType *ppar, char *szOut, char *szIn)); 
+
+PROTO(int HasAttr, (char *sz));
+
+PROTO(int LoadUnkMMt, (parRecType *ppar, int iIndex));
+
+PROTO(int LoadUnkLRT, (parRecType *ppar, int iIndex));
+
+PROTO(int GetUnkRefData, (parRecType *ppar, char *szRef, char **ppszMMt));
+
+PROTO(int GetUnkRefLRT, (parRecType *ppar, char *szRef, char **ppszLRT));
+
+PROTO(int GetUnkMMt, (parRecType *ppar, char *szPattern, char **ppszMMt));
+
+PROTO(int GetUnkNext, 
+(parRecType *ppar, 
+char **ppszData,
+char *pszForm,
+char *szLemmaOut,
+int cMaxLemma,
+char *szTagsOut,
+int cMaxTags));
+
+PROTO(int GetUnkNextOld, 
+(parRecType *ppar, 
+char **ppszData,
+char *pszForm,
+char *szLemmaOut,
+int cMaxLemma,
+char *szTagsOut,
+int cMaxTags));
+
+PROTO(int GetUnkBestMMTS, 
+(parRecType * ppar,
+char *szFormIn,
+char *szLemmaOut,
+int cMaxLemma,
+char *szTagsOut,
+int cMaxTags));
+
+PROTO(int GetUnkBestMMLTS,
+(parRecType * ppar,
+char *szFormIn,
+char *szDataOut,
+int cMaxData));
+
+PROTO(int ReplaceUnknownX,
+(unsigned char *pszLemmaIn,
+unsigned char *pszLemmaOut,
+int cMaxOut,
+unsigned char *pszFormIn,
+parRecType *ppar));
+
+PROTO(int CreateResultFromUnknown,
+(parRecType *ppar,
+int *pcResults,
+char *pszLemma,
+char *pszMMTS,
+int *pcrglexMax,
+lexRecType **rgplex));
+
+PROTO(int ProcessUnknown,
+(parRecType *ppar,
+int *pcResults,
+char *szFormIn,
+int *pcrglexMax,
+lexRecType **rgplex));
+
+PROTO(int ProcessUnknownLT,
+(parRecType *ppar,
+int *pcResults,
+char *szFormIn,
+char *pszCheckLemma,
+int *pcrglexMax,
+lexRecType **rgplex));
+
+PROTO(int MMt2DictAlt,
+(char *szMMTSIn,
+char *szAltOut,
+int cOutMax,
+int fAltPos));
+
+#ifdef HF_UPDATE
+PROTO(int MarkDisambiguated, (LemmaTagRecType *, 
+                              lexRecType **, int, int, int, parRecType *));
+PROTO(int ParseLemmaTag, (LemmaTagRecType *, char *));
+PROTO(int PrintInputLT, (char *pszOut, LemmaTagRecType *, parRecType *ppar,
+                         char *pszMark));
+PROTO(int PrintInputMDLT, (char *pszOut, LemmaTagRecType *, parRecType *ppar,
+                         char *pszMark));
+#endif
+
+FUNDEF2(int LoadUnkMMt, 
+parRecType *, ppar,
+int, iIndex)
+{
+int iRC;
+char szKey[HB_STRINGMAX];
+char szKeyC[HB_STRINGMAX];
+int iPattern;
+int fCFL;
+char szData[HB_LONGSTRINGMAX];
+int iDataLen;
+int iMMt;
+longint il;
+
+  iRC = 0;
+  if (ppar->punk->rgszMMt[iIndex] == NULL) {
+    sprintf(szKey,"%s%d","^^",iIndex);
+    hb_CpdCvs(szKey,szKeyC);
+    if (hb_CpdFindFirst(ppar->punk->pcpdUnk,szKeyC,
+      szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
+      fprintf(stderr,
+        "%s: error in hb_CpdFindFirst(%s), key = %s\n",
+        szPN,ppar->punk->pcpdUnk->szFileName,szKey);
+      exit(245);
+    }
+    il = iDataLen = strlen(szData) + 2;
+    pparMain->punk->rgszMMt[iIndex] = (char *) hb_LongAlloc(sizeof(char)*il);
+    if (pparMain->punk->rgszMMt[iIndex] == NULL) {
+      fprintf(stderr,
+        "%s: cannot get memory for, rgszMMt[%d], %ld chars.\n",
+        szPN,iIndex,il);
+      exit(240);
+    }
+    strcpy(pparMain->punk->rgszMMt[iIndex],szData);
+  }
+  /* else do nothing - unnecessary call, though */
+         /**/ /**** fprintf(stderr,
+         "Loaded: %s at %d.\n",pparMain->punk->rgszMMt[iIndex],iIndex); /**/
+  return iRC;
+} /* of LoadUnkMMt */
+
+FUNDEF2(int LoadUnkLRT, 
+parRecType *, ppar,
+int, iIndex)
+{
+int iRC;
+char szKey[HB_STRINGMAX];
+char szKeyC[HB_STRINGMAX];
+int iPattern;
+int fCFL;
+char szData[HB_LONGSTRINGMAX];
+int iDataLen;
+int iLRT;
+longint il;
+
+  iRC = 0;
+  if (ppar->punk->rgszLRT[iIndex] == NULL) {
+    sprintf(szKey,"%s%d","^^^",iIndex);
+    hb_CpdCvs(szKey,szKeyC);
+    if (hb_CpdFindFirst(ppar->punk->pcpdUnk,szKeyC,
+      szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
+      fprintf(stderr,
+        "%s: error in hb_CpdFindFirst(%s), key = %s\n",
+        szPN,ppar->punk->pcpdUnk->szFileName,szKey);
+      exit(245);
+    }
+    il = iDataLen = strlen(szData) + 2;
+    pparMain->punk->rgszLRT[iIndex] = (char *) hb_LongAlloc(sizeof(char)*il);
+    if (pparMain->punk->rgszLRT[iIndex] == NULL) {
+      fprintf(stderr,
+        "%s: cannot get memory for, rgszLRT[%d], %ld chars.\n",
+        szPN,iIndex,il);
+      exit(240);
+    }
+    strcpy(pparMain->punk->rgszLRT[iIndex],szData);
+  }
+  /* else do nothing - unnecessary call, though */
+         /**/ /**** fprintf(stderr,
+         "Loaded: %s at %d.\n",pparMain->punk->rgszLRT[iIndex],iIndex); /**/
+  return iRC;
+} /* of LoadUnkLRT */
+
+FUNDEF3(int GetUnkRefData, 
+parRecType *, ppar, 
+char *, szRef, 
+char **, ppszMMt)
+{
+int iRC;
+int iMMt;
+
+/**/ /**** fprintf(stderr,"Called GetUnkRefData(ppar,%s,%s)\n",
+                     szRef,*ppszMMt); /**/
+  iMMt = atoi(szRef);
+  if (iMMt < 1) {
+    fprintf(stderr,
+      "%s: unk handler, should be an index > 0: %s (file %s).\n",
+      szPN,szRef,ppar->punk->pcpdUnk->szFileName);
+    exit(244);
+  }
+  if (ppar->punk->rgszMMt[iMMt] == NULL) {
+    iRC = LoadUnkMMt(ppar,iMMt);
+    if (iRC != 0) {
+      return iRC;
+    }
+    if (ppar->punk->rgszMMt[iMMt] == NULL) {
+      fprintf(stderr,
+         "%s: fatal error in LoadUnkMMt(%d)/GetUnkMMt: NULL.\n",szPN,iMMt);
+      exit(243);
+    }
+  } /* of key not yet loaded from file */
+  *ppszMMt = ppar->punk->rgszMMt[iMMt];
+/**/ /**** fprintf(stderr,
+    "before return from GetUnkRefData: ppar->punk->rgszMMt[%d] == %s\n", 
+          iMMt, *ppszMMt); /**/
+  return 0;
+} /* of GetUnkRefData */
+
+FUNDEF3(int GetUnkRefLRT, 
+parRecType *, ppar, 
+char *, szRef, 
+char **, ppszLRT)
+{
+int iRC;
+int iLRT;
+
+/**/ /**** fprintf(stderr,"Called GetUnkRefLRT(ppar,%s,%s)\n",
+                     szRef,*ppszLRT); /**/
+  iLRT = atoi(szRef);
+  if (iLRT < 1) {
+    fprintf(stderr,
+      "%s: unk handler, should be an index > 0: %s (file %s).\n",
+      szPN,szRef,ppar->punk->pcpdUnk->szFileName);
+    exit(244);
+  }
+  if (ppar->punk->rgszLRT[iLRT] == NULL) {
+    iRC = LoadUnkLRT(ppar,iLRT);
+    if (iRC != 0) {
+      return iRC;
+    }
+    if (ppar->punk->rgszLRT[iLRT] == NULL) {
+      fprintf(stderr,
+         "%s: fatal error in LoadUnkLRT(%d)/GetUnkLRT: NULL.\n",szPN,iLRT);
+      exit(243);
+    }
+  } /* of key not yet loaded from file */
+  *ppszLRT = ppar->punk->rgszLRT[iLRT];
+/**/ /**** fprintf(stderr,
+    "before return from GetUnkRefData: ppar->punk->rgszLRT[%d] == %s\n", 
+          iLRT, *ppszLRT); /**/
+  return 0;
+} /* of GetUnkRefLRT */
+
+FUNDEF3(int GetUnkMMt, 
+parRecType *, ppar,
+char *, szPattern,
+char **, ppszMMt)
+{
+int iRC;
+char szKeyC[HB_STRINGMAX];
+int iPattern;
+int fCFL;
+char szData[HB_LONGSTRINGMAX];
+int iDataLen;
+
+  iRC = 0;
+      /**/ /**** fprintf(stderr,"GetUnkMMt: key req: %s\n",szPattern); /**/
+  hb_CpdCvs(szPattern,szKeyC);
+  if (hb_CpdFindFirst(ppar->punk->pcpdUnk,szKeyC,
+    szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
+    fprintf(stderr,
+     "%s: error in hb_CpdFindFirst(%s), key = %s\n",
+     szPN,ppar->punk->pcpdUnk->szFileName,szPattern);
+    exit(239);
+  }
+      /**/ /**** fprintf(stderr,"GetUnkMMt: ...data: %s\n",szData); /**/
+  iDataLen = strlen(szData);
+  if (iDataLen == 0) {
+    *ppszMMt = NULL;
+  }
+  else {
+    if (*szData != '<') { /* num. pointer, not direct data */
+      iRC = GetUnkRefData(ppar,szData,ppszMMt);
+      if (iRC != 0) {
+        return (400+iRC);
+      }
+    }
+    else { /* direct data in cpd file */
+      strcpy(ppar->punk->szFullData,szData);
+      *ppszMMt = ppar->punk->szFullData;
+    }
+  } /* of data found */
+  return iRC;
+} /* of GetUnkMMt */
+
+FUNDEF7(int GetUnkNext, 
+parRecType *, ppar, 
+char **, ppszData,
+char *, pszForm,
+char *, szLemmaOut,
+int, cMaxLemma,
+char *, szTagsOut,
+int, cMaxTags)
+{
+ /* take data string from unk file (*ppszData), create lemma from
+    lemma rule and return associated tag, shift *ppszData */
+int iRC;
+char *pchData;
+int iLemmaOut;
+char szPrefDel[HB_STRINGMAX];
+char szPrefAdd[HB_STRINGMAX];
+int iPref;
+char szSuffDel[HB_STRINGMAX];
+char szSuffAdd[HB_STRINGMAX];
+int iSuff;
+int cPrefAdd;
+int cSuffAdd;
+int cPrefDel;
+int cSuffDel;
+int cCopy;
+int iTag;
+int fMatch;
+int cFormLen;
+char szSGMLTag[HB_STRINGMAX];
+int iSGMLTag;
+char szContKey[HB_STRINGMAX];
+int iContKey;
+char *pszRefData;
+char szKey[HB_STRINGMAX];
+char szKeyC[HB_STRINGMAX];
+char *pszNextDataIfRef;
+
+  iRC = 0;
+  pszNextDataIfRef = NULL;
+  pchData = *ppszData; /* starts with < */
+  iLemmaOut = 0;
+  
+  /**/ /**** fprintf(stderr,"GetUnkNext: in %s\n",pchData); /**/
+
+  do { /* must be in loop if LRT can start with a ref (not now but what if!) */
+
+    iSGMLTag = 0;
+    if (*pchData == '<') { pchData++; }
+    while (*pchData != HB_EOS &&
+           *pchData != '>') { /* skip leading <MMt> */
+      iRC = AddChar(szSGMLTag,*pchData,&iSGMLTag,HB_STRINGMAX);
+      if (iRC != 0) { return 76; }
+      pchData++;
+    }
+    szSGMLTag[iSGMLTag] = HB_EOS;
+    if (*pchData == '>') {
+      pchData++; /* to first char of lemma rule or ref */
+    } 
+    else { /* no tag close */
+      return 3971;
+    }
+    if (!strcmp(szSGMLTag,SGMLLRTSUFFREF)) { /* reference to continuation of 
+                                            list of LRT elements */
+      /* for the moment, it is supposed that the reference is
+         the last in the input data (no continuation follows) */
+      /* construct reference key: */
+      
+      iContKey = 0;
+      while (*pchData != HB_EOS &&
+             *pchData != '<') {
+        iRC = AddChar(szContKey,*pchData,&iContKey,HB_STRINGMAX);
+        if (iRC != 0) { return 75; }
+        pchData++;
+      }
+      szContKey[iContKey] = HB_EOS;
+      iRC = GetUnkRefData(ppar,szContKey,&pszRefData);
+/**/ /**** fprintf(stderr,"after GetUnkRefData %s\n",pszRefData); /**/
+      if (iRC != 0) {
+        return (400+iRC);
+      }
+      pchData = pszRefData;
+    } /* end of reference resolution */
+    else if (!strcmp(szSGMLTag,SGMLLRTREF)) {
+      /* reference to LRT */
+      iContKey = 0;
+      while (*pchData != HB_EOS &&
+             *pchData != '<') {
+        iRC = AddChar(szContKey,*pchData,&iContKey,HB_STRINGMAX);
+        if (iRC != 0) { return 74; }
+        pchData++;
+      }
+      pszNextDataIfRef = pchData;
+      szContKey[iContKey] = HB_EOS;
+      iRC = GetUnkRefLRT(ppar,szContKey,&pszRefData);
+/**/ /**** fprintf(stderr,"after GetUnkRefLRT %s\n",pszRefData); /**/
+      if (iRC != 0) {
+        return (700+iRC);
+      }
+      pchData = pszRefData;
+      break;
+    } /* of if SGMLLRTREF */
+    else if (!strcmp(szSGMLTag,SGMLLRT)) {
+      /* direct data: */
+      break;
+    }
+    else { /* error tag */
+      return 77;
+    }
+  } while (!strcmp(szSGMLTag,SGMLLRTSUFFREF));
+
+  /* get prefix string to match & delete */
+  iPref = 0;
+  while (*pchData != HB_EOS &&
+         *pchData != UNKRULESEP) { /* prefix del parsing */    
+    if (iPref < HB_STRINGMAX - 2) {
+      szPrefDel[iPref++] = *pchData;
+    }
+    pchData++;
+  }
+  if (*pchData != UNKRULESEP) { /* wrong lemma rule format */
+    return 3987;
+  }
+  szPrefDel[iPref] = HB_EOS;
+  cPrefDel = iPref;
+  pchData++; /* skip / sep */
+
+  /* getting prefix replacement (add) string */
+  iPref = 0;
+  while (*pchData != HB_EOS &&
+         *pchData != UNKRULESEP) {
+    if (iPref < HB_STRINGMAX - 2) {
+      szPrefAdd[iPref] = *pchData;
+      iPref++;
+    }
+    pchData++;
+  }
+  szPrefAdd[iPref] = HB_EOS;
+  cPrefAdd = iPref;
+  if (*pchData != UNKRULESEP) { /* wrong lemma rule format */
+    return 3986;
+  }
+  pchData++; /* skip / sep */
+
+  /* get suffix string to match & delete */
+  iSuff = 0;
+  while (*pchData != HB_EOS &&
+         *pchData != UNKRULESEP) { /* prefix del parsing */    
+    if (iSuff < HB_STRINGMAX - 2) {
+      szSuffDel[iSuff++] = *pchData;
+    }
+    pchData++;
+  }
+  if (*pchData != UNKRULESEP) { /* wrong lemma rule format */
+    return 3985;
+  }
+  szSuffDel[iSuff] = HB_EOS;
+  cSuffDel = iSuff;
+  pchData++; /* skip / sep */
+
+  /* getting suffix replacement (add) string */
+  iSuff = 0;
+  while (*pchData != HB_EOS &&
+         *pchData != UNKRULESEP) {
+    if (iSuff < HB_STRINGMAX - 2) {
+      szSuffAdd[iSuff] = *pchData;
+      iSuff++;
+    }
+    pchData++;
+  }
+  szSuffAdd[iSuff] = HB_EOS;
+  cSuffAdd = iSuff;
+  if (*pchData != UNKRULESEP) { /* wrong lemma rule format */
+    return 3984;
+  }
+  pchData++; /* skip / sep to start of tags */
+
+  /* check if prefdel and suffdel matches form: */
+  fMatch = 1;
+  cFormLen = strlen(pszForm);
+  if ((cFormLen < cPrefDel) ||
+      (cPrefDel > 0 && strncmp(pszForm,szPrefDel,cPrefDel)) ||
+      (cFormLen < cSuffDel) ||
+      (cSuffDel > 0 && strncmp(pszForm+cFormLen-cSuffDel,
+                               szSuffDel,cSuffDel))) {
+    fMatch = 0;
+  } /* of match test */
+  if (fMatch == 0) {
+    while (*pchData != HB_EOS &&
+           *pchData != '<') { /* move to end of data or next rule/tag string */
+      pchData++;
+    }
+    *ppszData = pchData;
+    return -1; /* signal rule/form mismatch */
+  }
+
+  /* create output lemma first: */
+  *szLemmaOut = HB_EOS;
+  /* put prefix first: */
+  if (strlen(szLemmaOut) + cPrefAdd < cMaxLemma) {
+    strcat(szLemmaOut,szPrefAdd);
+  }
+  else { /* too short output lemma string !?!?! */
+    return 3983;
+  }
+  /* unchanged part of form: */
+  cCopy = strlen(pszForm) - cPrefDel; /* copying with suffix, what the hell */
+  if (strlen(szLemmaOut) + cCopy < cMaxLemma) {
+    strcat(szLemmaOut,pszForm + cPrefDel);
+    szLemmaOut[cPrefAdd + cCopy - cSuffDel] = HB_EOS; /* cut out suffix */
+  }
+  else { /* too short output lemma string !?!?! */
+    return 3982;
+  }
+  /* add suffix: */
+  if (strlen(szLemmaOut) + cSuffAdd < cMaxLemma) {
+    strcat(szLemmaOut,szSuffAdd);
+  }
+  else { /* too short output lemma string !?!?! */
+    return 3981;
+  }
+  /* done with lemma */
+
+  /* now the tag: */
+  strcpy(szTagsOut,"<MMt>");
+  iTag = strlen(szTagsOut);
+  while (*pchData != HB_EOS &&
+         *pchData != '<') {
+    if (iTag < cMaxTags) {
+      szTagsOut[iTag++] = *pchData;
+    }
+    else {
+      /* too short output string for tags!!!! */
+      return 3980;
+    }
+    pchData++;
+  }
+  szTagsOut[iTag] = HB_EOS;
+  if (pszNextDataIfRef != NULL) {
+    *ppszData = pszNextDataIfRef;
+  }
+  else {
+    *ppszData = pchData;
+  }
+  return iRC;
+} /* of GetUnkNext */
+
+FUNDEF7(int GetUnkNextOld, 
+parRecType *, ppar, 
+char **, ppszData,
+char *, pszForm,
+char *, szLemmaOut,
+int, cMaxLemma,
+char *, szTagsOut,
+int, cMaxTags)
+{
+ /* take data string from unk file (*ppszData), create lemma from
+    lemma rule and return associated tag, shift *ppszData */
+int iRC;
+char *pchData;
+int iLemmaOut;
+int cPrefCut;
+int cSuffCut;
+char szPrefAdd[HB_STRINGMAX];
+int iPref;
+char szSuffAdd[HB_STRINGMAX];
+int iSuff;
+int cPrefAdd;
+int cSuffAdd;
+int cCopy;
+int iTag;
+
+  iRC = 0;
+  pchData = *ppszData;
+  iLemmaOut = 0;
+  cPrefCut = 0;
+  while (*pchData != HB_EOS &&
+         *pchData != '>') { /* skip leading <MMt> */
+    pchData++;
+  }
+  if (*pchData == '>') {
+    pchData++; /* to first char of lemma rule */
+  } 
+  else {
+    return 3979;
+  }
+  while (*pchData != HB_EOS &&
+         *pchData != UNKRULESEP &&
+         *pchData <= '9' &&
+         *pchData >= '0') { /* prefix cut parsing */    
+    cPrefCut = cPrefCut * 10 + (*pchData - '0');
+    pchData++;
+  }
+  if (*pchData != UNKRULESEP) { /* wrong lemma rule format */
+    return 3987;
+  }
+  pchData++; /* skip / sep */
+  /* getting prefix replacement (add) string */
+  iPref = 0;
+  while (*pchData != HB_EOS &&
+         *pchData != UNKRULESEP) {
+    if (iPref < HB_STRINGMAX - 2) {
+      szPrefAdd[iPref] = *pchData;
+      iPref++;
+    }
+    pchData++;
+  }
+  szPrefAdd[iPref] = HB_EOS;
+  cPrefAdd = iPref;
+  if (*pchData != UNKRULESEP) { /* wrong lemma rule format */
+    return 3986;
+  }
+  pchData++; /* skip / sep */
+  cSuffCut = 0;
+  while (*pchData != HB_EOS &&
+         *pchData != UNKRULESEP &&
+         *pchData <= '9' &&
+         *pchData >= '0') { /* suffix cut parsing */    
+    cSuffCut = cSuffCut * 10 + (*pchData - '0');
+    pchData++;
+  }
+  if (*pchData != UNKRULESEP) { /* wrong lemma rule format */
+    return 3985;
+  }
+  pchData++; /* skip / sep */
+  /* getting suffix replacement (add) string */
+  iSuff = 0;
+  while (*pchData != HB_EOS &&
+         *pchData != UNKRULESEP) {
+    if (iSuff < HB_STRINGMAX - 2) {
+      szSuffAdd[iSuff] = *pchData;
+      iSuff++;
+    }
+    pchData++;
+  }
+  szSuffAdd[iSuff] = HB_EOS;
+  cSuffAdd = iSuff;
+  if (*pchData != UNKRULESEP) { /* wrong lemma rule format */
+    return 3984;
+  }
+  pchData++; /* skip / sep to start of tags */
+  /* create output lemma first: */
+  *szLemmaOut = HB_EOS;
+  /* put prefix first: */
+  if (strlen(szLemmaOut) + cPrefAdd < cMaxLemma) {
+    strcat(szLemmaOut,szPrefAdd);
+  }
+  else { /* too short output lemma string !?!?! */
+    return 3983;
+  }
+  /* unchanged part of form: */
+  cCopy = strlen(pszForm) - cPrefCut; /* copying with suffix, what the hell */
+  if (strlen(szLemmaOut) + cCopy < cMaxLemma) {
+    strcat(szLemmaOut,pszForm + cPrefCut);
+    szLemmaOut[cPrefAdd + cCopy - cSuffCut] = HB_EOS; /* cut out suffix */
+  }
+  else { /* too short output lemma string !?!?! */
+    return 3982;
+  }
+  /* add suffix: */
+  if (strlen(szLemmaOut) + cSuffAdd < cMaxLemma) {
+    strcat(szLemmaOut,szSuffAdd);
+  }
+  else { /* too short output lemma string !?!?! */
+    return 3981;
+  }
+  /* done with lemma */
+
+  /* now the tag: */
+  strcpy(szTagsOut,"<MMt>");
+  iTag = strlen(szTagsOut);
+  while (*pchData != HB_EOS &&
+         *pchData != '<') {
+    if (iTag < cMaxTags) {
+      szTagsOut[iTag++] = *pchData;
+    }
+    else {
+      /* too short output string for tags!!!! */
+      return 3980;
+    }
+    pchData++;
+  }
+  szTagsOut[iTag] = HB_EOS;
+  *ppszData = pchData;
+  return iRC;
+} /* of GetUnkNextOld */
+
+FUNDEF4(int GetUnkBestMMLTS, 
+parRecType *, ppar,
+char *, szFormIn,
+char *, szDataOut,
+int, cMaxData)
+{
+int iRC;
+char szKey[HB_STRINGMAX];
+char szKeyC[HB_STRINGMAX];
+int iPattern;
+int fCFL;
+char *pszMMTS;
+int iDataLen;
+int iMMt;
+int cFormLen;
+int cSumLen;
+int cSuffStart;
+int cPrefLenMax;
+int iSuffBeg;
+int cSuffCurrLen;
+int iPrefixLen;
+int crgLexMax;
+int iMaxSuffBeg;
+char *pszTag;
+char *pchMMTS;
+char szT[HB_STRINGMAX];
+char *pszData;
+char szLemma[HB_LONGSTRINGMAX];
+char szMMTS[HB_LONGSTRINGMAX];
+
+  iRC = 0;
+           /**/ /**** fprintf(stderr,
+       "%s: GetUnkBestMMLTS proc unknown (for data) %s.\n",szPN,szFormIn); /**/
+  cFormLen = strlen(szFormIn);
+  if (cFormLen > 1) { /* hard constraint; do not handle single letter */
+    cSuffStart = cFormLen - ppar->punk->cSuffMax;
+    if (cSuffStart < 1) { cSuffStart = 1; }
+    cPrefLenMax = ppar->punk->cPrefMax;
+    if (cPrefLenMax >= cFormLen) { cPrefLenMax = cFormLen - 1; }
+    for (cSumLen = cFormLen - 1; cSumLen >= 0; cSumLen--) { 
+      /* outermost loop for sum of pref + suff len */
+          /**/ /**** fprintf(stderr,"working length (sum): %d, formlen %d, suffstart %d, suffmax %d\n",cSumLen,cFormLen,cSuffStart,ppar->punk->cSuffMax); /**/
+      if (cSuffStart + cSumLen < cFormLen) {
+        cSuffStart = cFormLen - cSumLen;
+      }
+      iMaxSuffBeg = cFormLen - 1; /* 2001.06.12 to avoid zero length suffix */
+      if (cSumLen <= 1) {
+        iMaxSuffBeg = cFormLen; /* to get empty pref/suff combination for 
+                                   last resort tag which is under "^" key */
+      }
+      for (iSuffBeg = cSuffStart; iSuffBeg <= iMaxSuffBeg; iSuffBeg++) {
+        /* 2001.06.12 changed <= cFormLen to <, to get non-zero suffixes only 
+                      (kind of wastes trained resources, but...) */
+             /**/ /**** fprintf(stderr,"SuffBeg: %d\n",iSuffBeg); /**/
+        /* start with max. suffix len, go down and prolong prefix */
+        cSuffCurrLen = cFormLen - iSuffBeg;
+	iPrefixLen = cSumLen - cSuffCurrLen; 
+        if (iPrefixLen > cPrefLenMax) { break; }
+        strncpy(szKey,szFormIn,iPrefixLen);
+        szKey[iPrefixLen] = '^'; /* pref/suff separator to match data file */
+        szKey[iPrefixLen+1] = HB_EOS; /* must end it with zero */
+        strcat(szKey,szFormIn+iSuffBeg);
+             /**/ /**** fprintf(stderr,"Testing RuleKey %s.\n",szKey); /**/
+        iRC = GetUnkMMt(ppar,szKey,&pszMMTS);
+        if (iRC != 0) {
+          fprintf(stderr,"%s: fatal in GetUnkMMt, for key %s.\n",szPN,szKey);
+          return 1;
+        }
+        if (pszMMTS != NULL) { /* pref/suff pattern found */
+           /**/ /**** fprintf(stderr,"MMLTS got from data file: %s\n",pszMMTS); /**/
+          if (strlen(pszMMTS) > cMaxData) { /* too long data for output */
+            fprintf(stderr,"%s: too long data in unk rul file (%s)\n",
+                     szPN,pszMMTS);
+            return 9;
+          }
+          strcpy(szDataOut,pszMMTS);
+          /* we are done, first takes it all - but only if lemma
+             rules are ok (at least one must fit): */
+          /* the way the rules are generated guarantess that all
+             lemma rules can be applied */          
+          pszData = szDataOut;
+          while (*pszData != HB_EOS) {
+    /**/ /**** fprintf(stderr,
+      "in Best... gun before: form %s, data %s\n", szFormIn, pszData); /**/
+            iRC = GetUnkNext(ppar,&pszData,szFormIn,
+                                   szLemma,HB_LONGSTRINGMAX-2,
+                                   szMMTS,HB_LONGSTRINGMAX-2);
+  /**/ /**** fprintf(stderr,
+   "in Best... gun: rc %d, form %s, lemma out %s, tag out %s, next data %s\n",
+             iRC, szFormIn, szLemma, szMMTS, pszData); /**/
+            if (iRC > 0) { 
+              return 12; /* error in rule format or other fatal error */
+            }
+            if (iRC == 0) { break; } /* at least one rule matches, can create
+                         lemma/tag later - good! */
+            /* else iRC < 0, i.e. no match - must try next rule/tag */
+          }
+          if (iRC == 0) {
+            return iRC;
+          }
+
+
+
+
+          /* else go on, must try shorter form rule match! */
+        } /* of pref/suff pattern found in unk data file */
+      } /* of for iSuffBeg */
+    } /* of for cSumLen */
+  } /* form longer than 1 char */
+  else { /* for single letter "unknown" strings: */
+    strcpy(szDataOut,ppar->punk->szLF); /* return default LT rule */
+    /* 01/11/24 JH was: */ /*
+    strcpy(szDataOut,"<MMl>");
+    strcat(szDataOut,szFormIn);
+    strcat(szDataOut,
+         "<MMt>X"); /* hack; should be best tag for single letters */
+      /* in fact we get here only when single letter missing in dict,
+         or punctuation mistokenized as <f> */
+  }
+  return iRC;
+} /* of GetUnkBestMMLTS */
+
+FUNDEF6(int GetUnkBestMMTS, 
+parRecType *, ppar,
+char *, szFormIn,
+char *, szLemmaOut,
+int, cMaxLemma,
+char *, szTagsOut,
+int, cMaxTags)
+{
+int iRC;
+char szKey[HB_STRINGMAX];
+char szKeyC[HB_STRINGMAX];
+int iPattern;
+int fCFL;
+char *pszMMTS;
+int iDataLen;
+int iMMt;
+int cFormLen;
+int cSumLen;
+int cSuffStart;
+int cPrefLenMax;
+int iSuffBeg;
+int cSuffCurrLen;
+int iPrefixLen;
+int crgLexMax;
+int iMaxSuffBeg;
+char *pszTag;
+char *pchMMTS;
+char szT[HB_STRINGMAX];
+
+  iRC = 0;
+           /**/ /**** fprintf(stderr,
+                    "%s: GetUnkBestMMTS unknown %s.\n",szPN,szFormIn); /**/
+  cFormLen = strlen(szFormIn);
+  if (cFormLen > 1) { /* hard constraint; do not handle single letter */
+    cSuffStart = cFormLen - ppar->punk->cSuffMax;
+    if (cSuffStart < 1) { cSuffStart = 1; }
+    cPrefLenMax = ppar->punk->cPrefMax;
+    if (cPrefLenMax >= cFormLen) { cPrefLenMax = cFormLen - 1; }
+    for (cSumLen = cFormLen - 1; cSumLen >= 0; cSumLen--) { 
+      /* outermost loop for sum of pref + suff len */
+          /**/ /**** fprintf(stderr,"working length (sum): %d\n",cSumLen); /**/
+      if (cSuffStart + cSumLen < cFormLen) {
+        cSuffStart = cFormLen - cSumLen;
+      }
+      iMaxSuffBeg = cFormLen - 1; /* 2001.06.12 to avoid zero length suffix */
+      if (cSumLen <= 1) {
+        iMaxSuffBeg = cFormLen; /* to get empty pref/suff combination for 
+                                   last resort tag which is under "^" key */
+      }
+      for (iSuffBeg = cSuffStart; iSuffBeg <= iMaxSuffBeg; iSuffBeg++) {
+        /* 2001.06.12 changed <= cFormLen to <, to get non-zero suffixes only 
+                      (kind of wastes trained resources, but...) */
+             /**/ /**** fprintf(stderr,"SuffBeg: %d\n",iSuffBeg); /**/
+        /* start with max. suffix len, go down and prolong prefix */
+        cSuffCurrLen = cFormLen - iSuffBeg;
+	iPrefixLen = cSumLen - cSuffCurrLen; 
+        if (iPrefixLen > cPrefLenMax) { break; }
+        strncpy(szKey,szFormIn,iPrefixLen);
+        szKey[iPrefixLen] = '^'; /* pref/suff separator to match data file */
+        szKey[iPrefixLen+1] = HB_EOS; /* must end it with zero */
+        strcat(szKey,szFormIn+iSuffBeg);
+             /**/ /**** fprintf(stderr,"Testing RuleKey %s.\n",szKey); /**/
+        iRC = GetUnkMMt(ppar,szKey,&pszMMTS);
+        if (iRC != 0) {
+          fprintf(stderr,"%s: fatal in GetUnkMMt, for key %s.\n",szPN,szKey);
+          return 1;
+        }
+        if (pszMMTS != NULL) { /* pref/suff pattern found */
+            /**/ /**** fprintf(stderr," MMTS got from data file: %s\n",pszMMTS); /**/
+          if (strlen(pszMMTS) > cMaxTags) { /* too long data for output */
+            fprintf(stderr,"%s: too long data in unk rul file (%s)\n",
+                     szPN,pszMMTS);
+            return 3;
+          }
+          strcpy(szTagsOut,pszMMTS);
+          if (strlen(szFormIn) > cMaxLemma) { /* too long data for output */
+            fprintf(stderr,"%s: too long data in unk rul file (%s)\n",
+                     szPN,szFormIn);
+            return 4;
+          }
+          strcpy(szLemmaOut,szFormIn); /* for now... no rules for lemma!! */
+          /* we are done, first takes it all! */
+          iRC = 0;
+          return iRC;
+        } /* of pref/suff pattern found in unk data file */
+      } /* of for iSuffBeg */
+    } /* of for cSumLen */
+  } /* form longer than 1 char */
+  else { /* for single letter "unknown" strings: */
+    strcpy(szLemmaOut,szFormIn);
+    strcpy(szTagsOut,"<MMt>X"); /* hack; should be best tag for single letters */
+          /* in fact we get here only when single letter missing in dict,
+             which is what should not happen, or punctuation mistokenized as <f> */
+  }
+  return iRC;
+} /* of GetUnkBestMMTS */
+
+FUNDEF1(int HasAttr,
+char *, sz)
+{
+char *pch;
+  pch = sz;
+  if (*pch == HB_EOS) {
+    return 0;
+  }
+  pch++;
+  while (*pch != '>' &&
+         *pch != HB_EOS) {
+    pch++;
+  }  
+  if (*pch == HB_EOS) {
+    return 0; /* no > found, therfore has no attr */
+  }
+  else {
+    return 1; /* some > found at pos >= 2, some attr there */
+  }
+} /* of has attr */
+
+FUNDEF3(int ConvertTag,
+parRecType *, ppar, 
+char *, szOut,
+char *, szIn)
+{
+int iRC;
+longint ilCache;
+int fCFL;
+char szT[HB_STRINGMAX];
+
+  iRC = 0;
+  if (ppar->phashTagTable != NULL) {
+    if (!hb_HashFindFirst(ppar->phashTagTable,
+            szIn,szOut,HB_STRINGMAX-2,&ilCache,&fCFL)) {
+
+      /* found and converted into szOut */
+    }
+    else { /* not found in tag table: */
+      if (!hb_HashFindFirst(ppar->phashInvTagTable,
+              szIn,szOut,HB_STRINGMAX-2,&ilCache,&fCFL)) {
+        /* found in inverted table ...and converted back to compact! */
+        iRC = -2;
+      }
+      else {
+        iRC = 1; /* error -- tag not found */
+      }
+    } /* of not found in direct tag table */
+  } /* of tag table used */
+  else {
+    iRC = -1; /* tag table not used */
+  }
+  return iRC;
+} /* of ConvertTag */ 
+
+
+#ifdef HF_UPDATE
+FUNDEF4(int PrintInputLT,
+char *, pszOut,
+LemmaTagRecType *, pltIn,
+parRecType *, ppar,
+char *, pszMark)
+{
+int iRC;
+int i;
+int iLemma;
+int iTag;
+Char szRoot[HB_STRINGMAX];
+Char szEnd[HB_STRINGMAX];
+char *pszOutEnd;
+char *pszMPH_LB;
+char *pszMPH_TAG;
+char *pszMPH_PATTERN;
+int cLemma;
+char **prgLemma;
+char **prgRoot;
+char **prgEnd;
+char **prgLemmaDesc;
+int *prgLemmaFirstTag;
+int iTagMax;
+char **prgTag;
+char szOutTag[HB_STRINGMAX];
+char *pszOutTag;
+
+  iRC = 0;
+  prgTag = pltIn->rgTags;
+ 
+  pszMPH_LB = MPHINOUT_LB;
+  pszMPH_TAG = MPHINOUT_TAG;
+  pszMPH_PATTERN = MPHOUT_PATTERN;
+  cLemma = pltIn->irgLemmaFree;
+  prgLemma = pltIn->rgLemma;
+  prgRoot = pltIn->rgRoot;
+  prgEnd = pltIn->rgEnd;
+  prgLemmaDesc = pltIn->rgLemmaDesc;
+  prgLemmaFirstTag = pltIn->rgLemmaFirstTag;
+
+  pszOutEnd = pszOut + strlen(pszOut);
+  
+  for (iLemma = 0; iLemma < cLemma; iLemma++) {
+    /* print lemma: */
+    strcat(pszOutEnd,pszMPH_LB);
+    strcat(pszOutEnd,prgLemma[iLemma]);
+    strcat(pszOutEnd,prgLemmaDesc[iLemma]);
+    strcat(pszOutEnd,pszMark);
+    /* print root and ending segmentation: */
+    strcpy(szRoot,prgRoot[iLemma]);
+    strcpy(szEnd,prgEnd[iLemma]);
+    if (*szRoot != HB_EOS) {
+      strcat(pszOutEnd,MPHOUT_SEG_ROOT);
+      strcat(pszOutEnd,szRoot);
+    }
+    if (*szEnd != HB_EOS) {
+      strcat(pszOutEnd,MPHOUT_SEG_END);
+      strcat(pszOutEnd,szEnd);
+    }
+    /* print tags: */
+    iTagMax = prgLemmaFirstTag[iLemma+1];
+    for (iTag = prgLemmaFirstTag[iLemma]; iTag < iTagMax; iTag++) {
+      strcat(pszOutEnd,pszMPH_TAG);
+      pszOutTag = prgTag[iTag];
+      if ((iRC = ConvertTag(ppar,szOutTag,pszOutTag)) == 0) {
+        pszOutTag = szOutTag;
+      }
+      else if (iRC > 0) { /* error -- tag not found */
+        fprintf(stderr,"%s: tag %s not found at %s\n",
+                       szPN,pszOutTag,pszOutEnd);
+        /* 2005.04.14: removed return, reset iRC, just keep going, 
+		       keep original tag; only report (see above) */
+        iRC = -3;
+        /* return iRC; */
+      }
+      /* else table not used (-1), or tag already converted (-2) */
+      strcat(pszOutEnd,pszOutTag);
+    } /* of loop over printing tags */
+  } /* of for iLemma */
+  return iRC;
+} /* of PrintInputLT */
+
+
+FUNDEF4(int PrintInputMDLT,
+char *, pszOut,
+LemmaTagRecType *, pltIn,
+parRecType *, ppar,
+char *, pszMark)
+{
+int iRC;
+int i;
+int iLemma;
+int iTag;
+Char szRoot[HB_STRINGMAX];
+Char szEnd[HB_STRINGMAX];
+char *pszOutEnd;
+char *pszMPH_LB;
+char *pszMPH_TAG;
+int cLemma;
+char **prgLemma;
+char **prgRoot;
+char **prgEnd;
+char **prgLemmaDesc;
+int *prgLemmaFirstTag;
+int iTagMax;
+char **prgTag;
+char szOutTag[HB_STRINGMAX];
+char *pszOutTag;
+
+  iRC = 0;
+  prgTag = pltIn->rgTags;
+
+  pszMPH_LB = MPHMD_LB;
+  pszMPH_TAG = MPHMD_TAG;
+  cLemma = pltIn->irgMDLemmaFree;
+  prgLemma = pltIn->rgMDLemma;
+  prgRoot = pltIn->rgMDRoot;
+  prgEnd = pltIn->rgMDEnd;
+  prgLemmaFirstTag = pltIn->rgMDLemmaFirstTag;
+
+  pszOutEnd = pszOut + strlen(pszOut);
+  
+  for (iLemma = 0; iLemma < cLemma; iLemma++) {
+    /* print lemma: */
+    strcat(pszOutEnd,pszMPH_LB);
+    if (HasAttr(prgLemma[iLemma])) {      
+      pszOutEnd[strlen(pszOutEnd)-1] = ' ';
+    }
+    strcat(pszOutEnd,prgLemma[iLemma]);
+    /* MD: no desc strcat(pszOutEnd,prgLemmaDesc[iLemma]); */
+    strcat(pszOutEnd,pszMark);
+    /* print root and ending segmentation: */
+    strcpy(szRoot,prgRoot[iLemma]);
+    strcpy(szEnd,prgEnd[iLemma]);
+    if (*szRoot != HB_EOS) {
+      strcat(pszOutEnd,MPHOUT_SEG_ROOT);
+      strcat(pszOutEnd,szRoot);
+    }
+    if (*szEnd != HB_EOS) {
+      strcat(pszOutEnd,MPHOUT_SEG_END);
+      strcat(pszOutEnd,szEnd);
+    }
+    /* print tags: */
+    iTagMax = prgLemmaFirstTag[iLemma+1];
+    for (iTag = prgLemmaFirstTag[iLemma]; iTag < iTagMax; iTag++) {
+      strcat(pszOutEnd,pszMPH_TAG);
+      pszOutTag = prgTag[iTag];
+      if (HasAttr(pszOutTag)) {      
+        pszOutEnd[strlen(pszOutEnd)-1] = ' ';
+      }
+      if ((iRC = ConvertTag(ppar,szOutTag,pszOutTag)) == 0) {
+        pszOutTag = szOutTag;
+      }
+      else if (iRC > 0) { /* error -- tag not found */
+        if (0) { /* hack for now; 01/05/23: keep even bad tags fro MDt copy */
+          fprintf(stderr,"%s: tag %s not found at %s\n",
+                       szPN,pszOutTag,pszOutEnd);
+          return iRC;
+        }
+        else {
+          iRC = 0;
+        }
+      }
+      /* else table not used (-1), or tag already converted (-2) */
+      strcat(pszOutEnd,pszOutTag);
+    } /* of loop over printing tags */
+  } /* of for iLemma */
+  return iRC;
+} /* of PrintInputMDLT */
+
+FUNDEF6(int MarkDisambiguated,
+LemmaTagRecType *, pltIn,
+lexRecType **, rgplex,
+int, crglexMax,
+int, fLexOut,
+int, fTagOut,
+parRecType *, ppar)
+{
+int iRC;
+int irglex;
+int irgItem;
+lexRecItemType *plexItem;
+lexRecType *plex;
+lexRecType *plexFirst;
+int iTag;
+int fOut;
+int iLemmas;
+int iTags;
+char *pszTagIn;
+int fDisamb1;
+char *pszLemmaData;
+char szTagCompact[HB_STRINGMAX];
+/*
+char szLemmaData[HB_STRINGMAX];
+char szLemmaDict[HB_STRINGMAX];
+char *pchLemmaData;
+char *pchLemmaDict;
+*/
+
+  /* returns -1 if input lemma/tag not found in morphology output */
+  /* or input not completely disambiguated */
+  iRC = 0;
+  iLemmas = 0;
+  fDisamb1 = 0;
+  if (pltIn->irgLemmaFree == 1) {
+    if (pltIn->rgLemmaFirstTag[1] - pltIn->rgLemmaFirstTag[0] == 1)
+      fDisamb1 = 1;
+  }
+  
+  if (fDisamb1 == 0) { /* not completely disambiguated input l/t */
+    /* output everything from input */
+    iLemmas = 0; /* signal must select one lemma (takes first) */
+    iRC = -1;
+  }
+  else { /* input l/t completely disambiguated: find corresponding morph.
+            data */
+    pszLemmaData = pltIn->rgLemma[0];
+    for (irglex = 0; irglex < crglexMax; irglex++) {
+      plex = rgplex[irglex];
+      plex->fLemDisamb = 0;
+      /* check if lemma ok (input equal) */
+      /**/ /* fprintf(stderr,"comparing: data %s, dict %s\n",pszLemmaData,
+                    plex->pszLem); /**/
+      if (!strcmp(pszLemmaData,plex->pszLem)) { /* equal, found */
+        iLemmas++;
+        plex->fLemDisamb = 1;
+      } /* lemma found; do not check other lemmas for tags! */
+      iTags = 0;
+      for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+        plexItem = &(plex->rglexItem[irgItem]);
+        /**/ /* fprintf(stderr,
+                  "plex->citems: %d, fDelLexItem %d\n",plex->cItems,
+                  plexItem->fDelLexItem); /**/
+        pszTagIn = pltIn->rgTags[pltIn->rgLemmaFirstTag[0]];
+            /* we know it's only 1 */
+        if (ConvertTag(ppar,szTagCompact,pszTagIn) == -2) {
+          pszTagIn = szTagCompact;
+        }
+
+        /**/ /* fprintf(stderr,"plexItem->cTags: %d\n",plexItem->cTags); /**/
+        if (plexItem->fDelLexItem <= fLexOut) { 
+          for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+            plexItem->rgfTagDisamb[iTag] = 0;
+            if (plex->fLemDisamb == 1) {
+              /**/ /* fprintf(stderr,
+                      "comparing tags: data %s, dict %s\n",pszTagIn,
+                      plexItem->rgpszTag[iTag]); /**/
+              if (plexItem->rgfDelTag[iTag] <= fTagOut) {
+                if (!strcmp(pszTagIn,plexItem->rgpszTag[iTag])) {
+                  plexItem->rgfTagDisamb[iTag] = 1;
+                  iTags++;
+                }
+              } /* tag to print */
+            } /* of lemma found */
+          } /* of tag loop */
+        } /* of item marked for output */
+      } /* of loop over items of a lex (lemma) */
+      if (plex->fLemDisamb == 1 && iTags == 0) {
+        plex->fLemDisamb = 0;
+        iLemmas--;
+      }
+    } /* of for all lex records */
+  }
+  if (iLemmas == 0) {
+    if (iRC == 0) {
+      iRC = -2; 
+               /* mark lemma not found but marked first with tag ok (or
+                  first tag ever...) */
+    } /* otherwise will leave -1 in iRC -- means multiple lemma in */
+    for (irglex = 0; irglex < crglexMax; irglex++) {
+      plex = rgplex[irglex];
+      for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+        plexItem = &(plex->rglexItem[irgItem]);
+        if (plexItem->fDelLexItem <= fLexOut) { 
+                   /* take first lemma for now; better to find out
+                   some heuristics if e.g. lemmas differ at -<number>
+                   only etc. */ /**/
+          break;
+        }
+      }
+      if (irgItem < plex->cItems) break; /* inner loop finished by break */
+    }
+    if (irglex < crglexMax) { /* loop finished by break -- found not deleted
+                              item; keep irglex */
+    }
+    else {
+      irglex = 0; /* but this will end badly anyway... */
+    }
+    plexFirst = rgplex[irglex];
+
+    iLemmas = 0;
+    iTags = 0;
+    for (irglex = 0; irglex < crglexMax; irglex++) {
+      plex = rgplex[irglex];
+      plex->fLemDisamb = 0;
+      for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+        plexItem = &(plex->rglexItem[irgItem]);
+        /**/ /* fprintf(stderr,
+                  "irglex %d; plex->citems: %d, fDelLexItem %d\n",
+                  irglex,plex->cItems,
+                  plexItem->fDelLexItem); /**/
+        pszTagIn = pltIn->rgTags[pltIn->rgLemmaFirstTag[0]];
+            /* we know it's only 1 */
+        if (ConvertTag(ppar,szTagCompact,pszTagIn) == -2) {
+          pszTagIn = szTagCompact;
+        }
+        /**/ /* fprintf(stderr,"plexItem->cTags: %d\n",plexItem->cTags); /**/
+        if (plexItem->fDelLexItem <= fLexOut) { 
+          for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+            plexItem->rgfTagDisamb[iTag] = 0;
+            /**/ /* fprintf(stderr,
+                "soft1... comparing tags: data %s, dict %s\n",pszTagIn,
+                    plexItem->rgpszTag[iTag]); /**/
+            if (plexItem->rgfDelTag[iTag] <= fTagOut) {
+              if (!strcmp(pszTagIn,plexItem->rgpszTag[iTag])) {
+                plexItem->rgfTagDisamb[iTag] = 1;
+                iTags++;
+                if (plex->fLemDisamb == 0) {
+                  plex->fLemDisamb = 1;
+                  iLemmas++;
+                }
+              } /* tag to print */
+            } /* of lemma found */
+          } /* of tag loop */
+        } /* of item marked for output */
+      } /* of loop over items of a lex (lemma) */
+    } /* of for irglex - over dict results */
+    if (iLemmas == 0) { /* means also iTags == 0! */
+      plex = plexFirst; /* first lemma found before above big loop */
+      plex->fLemDisamb = 1;
+      /* no tag found... take first: */
+      for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+        plexItem = &(plex->rglexItem[irgItem]);
+        pszTagIn = pltIn->rgTags[pltIn->rgLemmaFirstTag[0]];
+          /* we know it's only 1 */
+        if (plexItem->fDelLexItem <= fLexOut) { 
+          for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+            plexItem->rgfTagDisamb[iTag] = 0;
+            if (plex->fLemDisamb == 1) {
+              /**/ /* fprintf(stderr,
+                      "comparing tags: data %s, dict %s\n",pszTagIn,
+                      plexItem->rgpszTag[iTag]); /**/
+              if (plexItem->rgfDelTag[iTag] <= fTagOut) {
+                plexItem->rgfTagDisamb[iTag] = 1;
+                iTags++;
+                irgItem = plex->cItems; /* finish outer loop immediately */
+                break; /* finish inner loop */
+              }
+            } /* of lemma found */
+          } /* of tag loop */
+        } /* of item marked for output */
+      } /* of loop over items of a lex (lemma) */
+    } /* no tag good for first lemma */
+  } /* lemma not found -- got first */
+  /* returns -1 if input lemma/tag not found in morphology output */
+  return iRC;
+} /* of MarkDisambiguated */
+
+FUNDEF2(int ParseLemmaTag,
+LemmaTagRecType *, pltOut,
+char *, szLemmaIn)
+{
+char *pch;
+int iState;
+int iState1; /* state to go from previous (higher) level state */
+int fIgn;
+int i;
+int iCOFree;
+int fLTag;
+int fTTag;
+
+  fLTag = 0; /* must be read for update to work */
+  fTTag = 0; /* must be read for update to work, after <l> though! */
+
+  *(pltOut->szArea) = HB_EOS;
+  pltOut->iszAreaFree = 1;
+  pltOut->irgTagFree = 0;
+  pltOut->irgLemmaFree = 0;
+  pltOut->irgMDLemmaFree = 0;
+  pltOut->pszAmbClass = pltOut->szArea;
+  pltOut->rgTags[0] = pltOut->szArea; /* 29.05.99 */
+       /* default: "" empty string tag (for no tag in input) */
+  pltOut->rgLemmaFirstTag[0] = 0; /* debugged: MarkDisambiguated */
+  pltOut->rgLemmaFirstTag[1] = 0; /* debugged: MarkDisambiguated */
+  *(pltOut->szCopyOnly) = HB_EOS;
+  iCOFree = 0;
+  iState = 0;
+  pch = szLemmaIn;
+  if (*pch != '<') {
+    return 1;
+  }
+  while (*pch != HB_EOS) {
+    fIgn = 0;
+    switch (iState) {
+      case 0: 
+        /* < */
+        iState = 1;
+        break;
+      case 1: /* SGML tag */
+        if (*pch == 'l' &&
+              pch[1] == '>' || pch[1] == ' ' || pch[1] == '\t') {
+          /* lemma */
+          pltOut->rgLemmaFirstTag[pltOut->irgLemmaFree] = pltOut->irgTagFree; 
+          pltOut->rgRoot[pltOut->irgLemmaFree] = pltOut->szArea; /* empty sz */
+          pltOut->rgEnd[pltOut->irgLemmaFree] = pltOut->szArea;
+          pltOut->rgLemmaDesc[pltOut->irgLemmaFree] = pltOut->szArea;
+          pltOut->rgLemma[pltOut->irgLemmaFree++] = 
+            pltOut->szArea + pltOut->iszAreaFree;
+          pltOut->rgLemmaFirstTag[pltOut->irgLemmaFree] = pltOut->irgTagFree; 
+          pch++;
+          iState1 = 0;
+          iState = 3;
+          fLTag = 1;
+        }
+        else if (*pch == 'M' &&
+                   pch[1] == 'D' &&
+                    pch[2] == 'l' &&
+                    (pch[3] == '>' || pch[3] == ' ' || pch[3] == '\t')) {
+          /* MD lemma */
+          pltOut->rgMDLemmaFirstTag[pltOut->irgMDLemmaFree] = 
+            pltOut->irgTagFree; 
+          pltOut->rgMDRoot[pltOut->irgMDLemmaFree] = 
+            pltOut->szArea; /* empty sz */
+          pltOut->rgMDEnd[pltOut->irgMDLemmaFree] =
+            pltOut->szArea;
+          pltOut->rgMDLemma[pltOut->irgMDLemmaFree++] = 
+            pltOut->szArea + pltOut->iszAreaFree;
+          pltOut->rgMDLemmaFirstTag[pltOut->irgMDLemmaFree] = 
+            pltOut->irgTagFree; 
+          pch += 3;
+          iState1 = 10;
+          iState = 2;
+        }
+        else if (*pch == 'C' &&
+                 pch[1] == 't' &&
+                 pch[2] == '>') {
+          /* amb class */
+          pltOut->pszAmbClass = 
+            pltOut->szArea + pltOut->iszAreaFree;
+          pch += 2;
+          iState1 = 0;
+          iState = 2;
+        }
+        else if (*pch == 'M' &&
+                   pch[1] == 'M' &&
+                   (pch[2] == 'l' || pch[2] == 't') &&
+                    (pch[3] == '>' || pch[3] == ' ' || pch[3] == '\t')) {
+          /* input lemma/tag, from morphology: ignore incl. its <R> and <E> */
+          pch += 3;
+          iState = 4;
+        }
+        else if (*pch == 'R' && pch[1] == '>') {
+          /* root */
+          pltOut->rgRoot[pltOut->irgLemmaFree-1] =
+            pltOut->szArea + pltOut->iszAreaFree;
+          pch++;
+          iState1 = 0;
+          iState = 2;
+        }
+        else if (*pch == 'E' && pch[1] == '>') {
+          /* root */
+          pltOut->rgEnd[pltOut->irgLemmaFree-1] =
+            pltOut->szArea + pltOut->iszAreaFree;
+          pch++;
+          iState1 = 0;
+          iState = 2;
+        }
+        else if (*pch == 't' && 
+                   pch[1] == '>' || pch[1] == ' ' || pch[1] == '\t') {
+          /* tag */
+          if (fLTag == 0) {
+            /* fake lemma "?" */
+            pltOut->rgLemmaFirstTag[pltOut->irgLemmaFree] = pltOut->irgTagFree; 
+            pltOut->rgRoot[pltOut->irgLemmaFree] = pltOut->szArea; /* empty sz */
+            pltOut->rgEnd[pltOut->irgLemmaFree] = pltOut->szArea;
+            pltOut->rgLemmaDesc[pltOut->irgLemmaFree] = pltOut->szArea;
+            pltOut->rgLemma[pltOut->irgLemmaFree++] = 
+              pltOut->szArea + pltOut->iszAreaFree;
+            pltOut->rgLemmaFirstTag[pltOut->irgLemmaFree] = pltOut->irgTagFree;
+            pltOut->szArea[pltOut->iszAreaFree++] = '?';
+            pltOut->szArea[pltOut->iszAreaFree++] = HB_EOS;
+            fLTag = 1;
+          }
+          pltOut->rgTags[pltOut->irgTagFree++] = 
+            pltOut->szArea + pltOut->iszAreaFree;
+          pltOut->rgLemmaFirstTag[pltOut->irgLemmaFree] = pltOut->irgTagFree; 
+          pch++;
+          iState1 = 0;
+          iState = 2;
+        }
+        else {
+          fIgn = 1; /* include current char in copied string */
+          iState1 = 0;
+          iState = 8; /* just copy the rest of the SGML tag, plus < */
+        }
+        break;
+      case 2: /* MD lemma, all tag, etc. contents reading; not <l>! */
+        if (*pch == '<') { 
+          pltOut->iszAreaFree++;
+          fIgn = 1; 
+          iState = iState1;
+        }
+        else {
+          pltOut->szArea[pltOut->iszAreaFree++] = *pch;
+          pltOut->szArea[pltOut->iszAreaFree] = HB_EOS;
+        }
+        break;
+      case 3: /* lemma contents reading: separate description */
+        if (*pch == '<') {
+          pltOut->iszAreaFree++;
+          fIgn = 1; 
+          iState = iState1;
+        }
+        else if (*pch == HF_EXPL_SPACE) { 
+          pltOut->iszAreaFree++; /* skip HB_EOS */
+          pltOut->rgLemmaDesc[pltOut->irgLemmaFree-1] = 
+            pltOut->szArea + pltOut->iszAreaFree;
+          fIgn = 1; /* keep '_' for storage in state 2 */ 
+          iState = 2; /* save rest as if normal tag contents */
+        }
+        else {
+          pltOut->szArea[pltOut->iszAreaFree++] = *pch;
+          pltOut->szArea[pltOut->iszAreaFree] = HB_EOS;
+        }
+        break;
+      case 4: /* ignore input MMl/MMt etc. */
+        if (*pch == '<') {
+          pch++;
+          if (*pch != HB_EOS) {
+            if (*pch == 'R' && pch[1] == '>') { pch++; /* ignore, too */ }
+            else if (*pch == 'E' && pch[1] == '>') { pch++; /* ignore, too */ }
+            else if (*pch == 'M' &&
+                       pch[1] == 'M' &&
+                        pch[2] == 't' &&
+                        (pch[3] == '>' || pch[3] == ' ' || pch[3] == '\t')) {
+               /* MM tag */
+              pch += 3; /* ignore, too */
+            }
+            else { /* other tag: test again in main loop: */
+              pch--; fIgn = 1; iState = 0;
+            }
+          }
+        }
+        /* else simply ignore */
+        break;
+      case 8: /* copy left SGML tag bracket '<' + 1st char into szCopyOnly */
+        if (iCOFree < HF_MAXRESULT-2) {
+          pltOut->szCopyOnly[iCOFree++] = '<';
+          pltOut->szCopyOnly[iCOFree++] = *pch;
+          pltOut->szCopyOnly[iCOFree] = HB_EOS;
+        }
+        iState = 9;
+        break;
+      case 9: /* just copy everything until next SGML tag into szCopyOnly */
+        if (*pch == '<' ||
+            *pch == HB_EOS) { /* next tag: goto previously recorded state */
+          fIgn = 1;
+          iState = iState1;
+        }
+        else { /* copy to szCopyOnly */
+          if (iCOFree < HF_MAXRESULT-1) {
+            pltOut->szCopyOnly[iCOFree++] = *pch;
+            pltOut->szCopyOnly[iCOFree] = HB_EOS;
+          }
+        }
+        break;
+      case 10: /* after <MDl> tag & contents: */
+        iState = 11;
+        break; /* just skip the tag opening '<' */
+      case 11: /* after <MDl> tag & contents: */
+        if (*pch == 'R' && pch[1] == '>') {
+          /* root */
+          pltOut->rgMDRoot[pltOut->irgMDLemmaFree-1] =
+            pltOut->szArea + pltOut->iszAreaFree;
+          pch++;
+          iState1 = 10;
+          iState = 2;
+        }
+        else if (*pch == 'E' && pch[1] == '>') {
+          /* root */
+          pltOut->rgMDEnd[pltOut->irgMDLemmaFree-1] =
+            pltOut->szArea + pltOut->iszAreaFree;
+          pch++;
+          iState1 = 10;
+          iState = 2;
+        }
+        else if (*pch == 'M' &&
+                   pch[1] == 'D' &&
+                    pch[2] == 't' &&
+                    (pch[3] == '>' || pch[3] == ' ' || pch[3] == '\t')) {
+          /* MD tag */
+          pltOut->rgTags[pltOut->irgTagFree++] = 
+            pltOut->szArea + pltOut->iszAreaFree;
+          pltOut->rgMDLemmaFirstTag[pltOut->irgMDLemmaFree] = 
+            pltOut->irgTagFree; 
+          pch += 3;
+          iState1 = 10;
+          iState = 2;
+        }
+        else { /* other tag; go back to initial state */
+          pch--; /* put back the '<' */
+          fIgn = 1;
+          iState = 0;
+        }
+        break;
+      default: break;
+    } /* of switch iState */
+    if (!fIgn) {
+      if (*pch == HB_EOS) break;
+      pch++;
+    }
+  }
+/**/ /* fprintf(stderr,"---\namb class: %s\n",pltOut->pszAmbClass);
+  fprintf(stderr,"CopyOnly: %s\n",pltOut->szCopyOnly);
+  for (i = 0; i < pltOut->irgMDLemmaFree; i++) {
+    fprintf(stderr,"MDlemma[%d]: %s\n",i,pltOut->rgMDLemma[i]);
+    fprintf(stderr,"MDroot: %s\n",pltOut->rgMDRoot[i]);
+    fprintf(stderr,"MDending: %s\n",pltOut->rgMDEnd[i]);
+    for (iState = pltOut->rgMDLemmaFirstTag[i]; 
+         iState < pltOut->rgMDLemmaFirstTag[i+1]; iState++)
+    {
+      fprintf(stderr,"MDtag: %s\n",pltOut->rgTags[iState]);
+    }
+  }
+  for (i = 0; i < pltOut->irgLemmaFree; i++) {
+    fprintf(stderr,"lemma[%d]: %s\n",i,pltOut->rgLemma[i]);
+    fprintf(stderr,"lemmaDesc: %s\n",pltOut->rgLemmaDesc[i]);
+    fprintf(stderr,"root: %s\n",pltOut->rgRoot[i]);
+    fprintf(stderr,"ending: %s\n",pltOut->rgEnd[i]);
+    for (iState = pltOut->rgLemmaFirstTag[i]; 
+         iState < pltOut->rgLemmaFirstTag[i+1]; iState++)
+    {
+      fprintf(stderr,"tag: %s\n",pltOut->rgTags[iState]);
+    }
+  }
+/**/
+  return 0;
+} /* of ParseLemmaTag */ 
+#endif
+
+FUNDEF4(int AddChar,
+unsigned char *, szTo, 
+char, ch,
+int *, cAct,
+int, cToMax)
+{
+   if (*cAct < cToMax - 2) { /* OK */
+     szTo[*cAct] = ch;
+     (*cAct)++;
+   }
+   else {
+     szTo[*cAct] = 0;
+     fprintf(stderr,"%s: too long output string %s (%d) when adding '%c'\n",
+             szPN,szTo,strlen((char *)szTo),ch);
+     return 31;
+   }
+   return 0;
+} /* of AddChar */
+
+FUNDEF4(int SprintCats,
+char *, pszOut,
+char *, szSep,
+char *, szCats,
+char, cCatItemSep)
+{
+char *pchOut;
+char szT[HB_STRINGMAX];
+
+  pchOut = pszOut + strlen(pszOut);
+  strcpy(szT," ");
+  szT[0] = HF_EXPL_SPACE;
+  strcat(szT,szSep);
+
+  if (*szCats != HB_EOS &&
+      (*szCats != HF_EXPL_SPACE || szCats[1] != HB_EOS)) {
+    pch = szCats;
+    strcpy(pchOut,szT);
+    pchOut += strlen(szT);
+    if (*pch == HF_EXPL_SPACE) pch++;
+    while (*pch != HB_EOS) {
+      if (*pch == cCatItemSep) {
+        strcpy(pchOut,szT);
+        pchOut += strlen(szT);
+      }
+      else {
+        *pchOut++ = *pch;
+      }
+      pch++;
+    }
+    *pchOut = HB_EOS;
+  } /* of non-empty categories */
+  return 0;
+} /* of SprintCats */
+
+FUNDEF6(int SprintCesFormat, 
+char *, pszOut,
+lexRecType *, plex,
+lexRecItemType *, plexItem,
+parRecType *, ppar,
+int, fTagOut,
+int, fAll)
+{
+int iRC;
+int iTag;
+Char szRoot[HB_STRINGMAX];
+Char szEnd[HB_STRINGMAX];
+int iTagsOut; /* no. of tags really output */
+char *pszOutEnd;
+char *pszMPH_LB;
+char *pszMPH_TAG;
+char *pszMPH_PATTERN;
+char szOutTag[HB_STRINGMAX];
+char *pszOutTag;
+char szSGMLLemma[HB_STRINGMAX];
+char szSGMLTag[HB_STRINGMAX];
+
+  /* returns > 0 if error, < 0 if no output, 0 if ok */
+
+  iRC = 0;
+/**/ /**** fprintf(stderr,"sprintcesformat: fAll %d, fTagOut %d.\n",
+               fAll,fTagOut); /**/
+  pszMPH_PATTERN = MPHOUT_PATTERN;
+  if (fAll) {
+    pszMPH_LB = MPHOUT_LB;
+    pszMPH_TAG = MPHOUT_TAG;
+    /* THIS CODE ASSUMES THAT ALL TAGS HAVE UNK (000 OR 00x) in their
+         pats, so that it tests only the first rgpszPat[0]: */
+    if (!strcmp(plexItem->rgpszPat[0],"unk000:unk000")) {
+      strcpy(szSGMLLemma,pszMPH_LB);
+      szSGMLLemma[strlen(szSGMLLemma)-3] = TOTALLYUNKCHARID; 
+           /* assumes end of attrinute
+              like this: ...src="ad"> and replaces the 'd' in it */
+      strcpy(szSGMLTag,pszMPH_TAG);
+      szSGMLTag[strlen(szSGMLTag)-3] = TOTALLYUNKCHARID; 
+           /* assumes end of attrinute
+              like this: ...src="ad"> and replaces the 'd' in it */
+      pszMPH_LB = szSGMLLemma;
+      pszMPH_TAG = szSGMLTag;
+    }
+    else if (!strcmp(plexItem->rgpszPat[0],"unk00x:unk00x")) {
+      strcpy(szSGMLLemma,pszMPH_LB);
+      szSGMLLemma[strlen(szSGMLLemma)-3] = TAGUNKCHARID; /* same as above */
+      strcpy(szSGMLTag,pszMPH_TAG);
+      szSGMLTag[strlen(szSGMLTag)-3] = TAGUNKCHARID; 
+           /* assumes end of attrinute
+              like this: ...src="ad"> and replaces the 'd' in it */
+      pszMPH_LB = szSGMLLemma;
+      pszMPH_TAG = szSGMLTag;
+    }
+  }
+  else {
+    pszMPH_LB = MPHINOUT_LB;
+    pszMPH_TAG = MPHINOUT_TAG;
+  }
+  iTagsOut = 0;
+  pszOutEnd = pszOut + strlen(pszOut);
+  /* print lemma: */
+  strcat(pszOut,pszMPH_LB);
+  strcat(pszOut,plex->pszLem);
+
+  /* the explanations will need spec tag and have to tell sgdis (Karel Sk.) */
+  
+  if (SprintCats(pszOut,ppar->szSyntSep,plexItem->pszSynt,
+                 HF_EXPL_SPACE) > 0) {
+    return 599;
+  }
+  if (SprintCats(pszOut,ppar->szSemSep,plexItem->pszSem,
+                 HF_EXPL_SPACE) > 0) {
+    return 598;
+  }
+  if (SprintCats(pszOut,ppar->szStyleSep,plexItem->pszStyle,
+                 HF_EXPL_SPACE) > 0) {
+    return 597;
+  }
+  if (SprintCats(pszOut,ppar->szDescSep,plexItem->pszDesc,
+                 HB_EOS) > 0) {
+    return 596;
+  }
+
+  if ((ppar->fRoot || ppar->fEnding)) {
+    /* print root and ending segmentation: */
+    strcpy(szRoot,plex->pszForm);
+    strcpy(szEnd,szRoot+strlen(szRoot)-plexItem->cEndSegmentLength);
+    szRoot[strlen(szRoot)-plexItem->cEndSegmentLength] = HB_EOS;
+    if (strlen(szEnd) == 0) strcpy(szEnd,"0");
+
+    if (ppar->fRoot) {
+      strcat(pszOut,MPHOUT_SEG_ROOT);
+      strcat(pszOut,szRoot);
+    }
+    if (ppar->fEnding) {
+      strcat(pszOut,MPHOUT_SEG_END);
+      strcat(pszOut,szEnd);
+    }
+  }
+  /* print tags: */
+  for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+    if ((fAll && plexItem->rgfDelTag[iTag] == fTagOut) ||
+        (!fAll && plexItem->rgfTagDisamb[iTag])) {
+             /* print disamb tag even if not marked for output */
+      if (ppar->fPatternsOut) { /* 00/11/03 hajic */
+        strcat(pszOut,pszMPH_PATTERN);
+        strcat(pszOut,plexItem->rgpszPat[iTag]);
+      }
+      strcat(pszOut,pszMPH_TAG);
+      pszOutTag = plexItem->rgpszTag[iTag];
+      if ((iRC = ConvertTag(ppar,szOutTag,pszOutTag)) == 0) {
+        pszOutTag = szOutTag;
+      }
+      else if (iRC > 0) { /* error -- tag not found */
+        fprintf(stderr,"%s: ConvertTag(%d), tag %s not found at %s\n",
+                       szPN,iRC,pszOutTag,pszOut);
+        return 555;
+      }
+      /* else table not used (-1), or tag already converted (-2) */
+      strcat(pszOut,pszOutTag);
+      iTagsOut++;
+    } /* of printing a tag */
+  } /* of loop over printing tags */
+  iRC = 0;
+  if (iTagsOut == 0) {
+    /* delete lemma -- no tag ouput */
+    *pszOutEnd = HB_EOS;
+    iRC = -1;
+  }
+  return iRC;
+} /* of SprintCesFormat */
+
+FUNDEF4(int AddToIntStruct, 
+unsigned char *, pszLemmaIn,
+unsigned char *, pszFormIn,
+parRecType *, ppar,
+lexRecType *, plex)
+{
+unsigned char *pch;
+unsigned char *pchTagTag;
+int cOutAct;
+int iState;
+lexRecItemType *plexItem;
+int iFlagsFree;
+char szFlags[HB_STRINGMAX];
+char *pchFlag;
+char **ppszSel;
+char *pszOut;
+char *pchOut;
+char *pszInfo;
+int i;
+int iFlag;
+char szFlag[HB_STRINGMAX];
+int iSel;
+int cWithinParen;
+int iTag; 
+int iTagMoving; 
+char *pszTag;
+char *pszPat;
+int fDelTag;
+int iCmp;
+char *pszPatternName; /* 00/11/03 hajic */
+
+   iState = 0;
+   pch = pszLemmaIn;
+   if (*pch == HB_EOS) {
+     return 289;
+   }
+   plex->iAreaFree = 0;
+   plex->cItems = 0;
+   /**/ /* fprintf(fLog,"%s\n",pszLemmaIn); /**/
+
+   plex->pszForm = pszFormIn;
+
+   /* first, analyze input into *plex: */
+   cOutAct = 0;
+
+   plex->pszLem = FreeString(plex);
+   /* add first char regardless of what it is (important not to check
+      if punctuation, esp. -, `, +, etc. */
+   /* cannot be empty -- checked above */
+   if ((iRC = 
+     AddChar(plex->szArea,*pch,&(plex->iAreaFree),MCF_MAXINFO)) > 0) {
+     return 19000+iRC;
+   }
+   pch++; /* move to 2nd char */
+   while (*pch != HB_EOS) {
+     if (*pch == HF_PATSEP_CHAR) {
+       break;
+     }
+     if ((iRC = 
+        AddChar(plex->szArea,*pch,&(plex->iAreaFree),MCF_MAXINFO)) > 0) {
+       return 19000+iRC;
+     }
+     pch++;
+   } /* of while not EOS */
+   CloseString(plex);
+
+   while (*pch != HB_EOS) {
+  
+     pch++; /* skipping next-info-variant (HF_PATSEP_CHAR) char */
+
+     plexItem = &(plex->rglexItem[plex->cItems]);
+     plexItem->pszPat = FreeString(plex); /* only first pattern stored here! */
+
+     /* get ending segment length: */
+     if (*pch != HB_EOS) {
+       i = 10 * (*pch++ - '0');
+     }
+     if (*pch != HB_EOS) {
+       i += (*pch++ - '0');
+     }
+     plexItem->cEndSegmentLength = i;
+     /* now, get pattern info: */
+     pszPatternName = FreeString(plex);
+     while (*pch != HB_EOS && *pch != HF_PATSEP_CHAR) {
+       if (*pch == HF_TAG_SEP) {
+         break;
+       }
+       if ((iRC = 
+          AddChar(plex->szArea,*pch,&(plex->iAreaFree),MCF_MAXINFO)) > 0) {
+         return 19100+iRC;
+       }
+       pch++;
+     } /* of while not EOS/PATSEP */
+     CloseString(plex);
+
+     if (*pch == HB_EOS || *pch == HF_PATSEP_CHAR) {
+       fprintf(stderr,
+       "%s: start-of-tag (\'%c\') not found in: %s\n",
+         szPN,HF_TAG_SEP,pszLemmaIn);
+       return 202;
+     }
+
+     /* get tags: */
+     plexItem->cTags = 0;
+     while (*pch == HF_TAG_SEP || *pch == HF_TAG_ALT) {
+       pch++; /* skip '+' or '/' */
+
+       /* 00/11/02 HERE changes for pattern output: hajic */
+       plexItem->rgpszPat[plexItem->cTags] = pszPatternName;
+
+       plexItem->rgpszTag[plexItem->cTags] = FreeString(plex);
+       plexItem->rgfDelTag[plexItem->cTags] = FLAGNOTDEL; 
+                       /* tag default: do not delete */
+       while (*pch != HB_EOS &&
+              *pch != HF_PATSEP_CHAR &&
+              *pch != HF_EXPL_SPACE &&
+              *pch != HF_TAG_SEP &&
+              *pch != HF_TAG_ALT) {
+         if ((iRC = 
+              AddChar(plex->szArea,*pch,&(plex->iAreaFree),MCF_MAXINFO)) > 0) {
+           return 19200+iRC;
+         }
+         pch++;
+       } /* of getting one tag */
+       CloseString(plex);
+
+       /* insert sort new tag, and ignore duplicates: */
+       pszTag = plexItem->rgpszTag[plexItem->cTags];
+       pszPat = plexItem->rgpszPat[plexItem->cTags];
+       fDelTag = plexItem->rgfDelTag[plexItem->cTags];
+       for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+         iCmp = strcmp(pszTag,plexItem->rgpszTag[iTag]);
+         if (iCmp == 0) {
+           /* equal, ignore current tag */
+           plexItem->cTags--;
+           break;
+         }
+         if (iCmp < 0) {
+           /* current tag smaller than tag from prev list; insert here */
+           for (iTagMoving = plexItem->cTags; iTagMoving > iTag; 
+                                                iTagMoving--) {
+             plexItem->rgpszTag[iTagMoving] = plexItem->rgpszTag[iTagMoving-1];
+             plexItem->rgpszPat[iTagMoving] = plexItem->rgpszPat[iTagMoving-1];
+             plexItem->rgfDelTag[iTagMoving] = 
+               plexItem->rgfDelTag[iTagMoving-1];
+           } /* of making space for inserted tag ptr */
+           plexItem->rgpszTag[iTag] = pszTag;
+           plexItem->rgpszPat[iTag] = pszPat;
+           plexItem->rgfDelTag[iTag] = fDelTag;
+           break;
+         }
+       } /* of comparing all tags with current tag */
+
+       plexItem->cTags++;
+       if (plexItem->cTags >= HF_MAXNO_TAGS) {
+         fprintf(stderr,
+         "%s: too many tags (> %d) for lemma: %s\n",
+           szPN,HF_MAXNO_TAGS,pszLemmaIn);
+         plexItem->cTags--;
+         return 292;
+       }
+     } /* of loop over tags */
+     if (*pch != HF_EXPL_SPACE) {
+       fprintf(stderr,
+       "%s: explanation part missing in: %s\n",
+         szPN,pszLemmaIn);
+       return 203;
+     }
+
+     /* now, get info part: */     
+     /* first, extract indicators (flags) into separate string: */
+     /* ignore what's within parenthesis, in order not to get
+        flags as one-letter strings */
+     cWithinParen = 0;
+     pszInfo = pch;
+     iFlagsFree = 0;
+     while (*pch != HB_EOS && *pch != HF_PATSEP_CHAR) {
+       if (*pch == HF_LEFT_COMMENT) {
+         /* start of description, ignore until closing right paren */
+         cWithinParen++; /* may be embedded */
+       }
+       else if (*pch == HF_RIGHT_COMMENT) {
+         cWithinParen--;
+         if (cWithinParen < 0) cWithinParen = 0; /* error but... */
+       }
+       else if (cWithinParen == 0) {
+         if (*pch == HF_EXPL_SPACE &&
+             pch[1] != HB_EOS && pch[1] != HF_PATSEP_CHAR &&
+             (pch[2] == HF_EXPL_SPACE || 
+              pch[2] == HB_EOS || 
+              pch[2] == HF_PATSEP_CHAR)) {
+           if ((iRC = 
+                AddChar(szFlags,*pch,&iFlagsFree,HB_STRINGMAX)) > 0) {
+             return 19400+iRC;
+           }         
+           if ((iRC = 
+                AddChar(szFlags,pch[1],&iFlagsFree,HB_STRINGMAX)) > 0) {
+             return 19400+iRC;
+           }
+           pch++;
+         } /* of flag found */
+       }  /* of not within parentheses */
+       pch++;           
+     } /* of getting flags */
+     szFlags[iFlagsFree] = HB_EOS;
+     /* next, get description: */
+     cWithinParen = 0;
+     pch = pszInfo;
+     plexItem->pszDesc = FreeString(plex);
+     while (*pch != HB_EOS && *pch != HF_PATSEP_CHAR) {
+       if (*pch == HF_LEFT_COMMENT || 
+            (*pch == HF_EXPL_SPACE && pch[1] == HF_LEFT_COMMENT)
+           ) {
+         /* start of description, copy until closing right paren inc. */
+         cWithinParen++; /* may be embedded */
+       }
+       if (cWithinParen > 0) {
+         if ((iRC = 
+              AddChar(plex->szArea,*pch,&(plex->iAreaFree),MCF_MAXINFO)) > 0) {
+           return 19500+iRC;
+         }
+       } /* end of char copy to pszDesc */
+       if (*pch == HF_EXPL_SPACE && pch[1] == HF_LEFT_COMMENT) {
+         cWithinParen--; 
+            /* the HF_LEFT_COMMENT  will increase it next time again! -- */
+            /* must not be increased twice! */
+       }
+       if (*pch == HF_RIGHT_COMMENT) {
+         cWithinParen--;
+         if (cWithinParen < 0) cWithinParen = 0; /* error but... */
+       }
+       pch++;           
+     } /* of getting flags */
+     CloseString(plex);
+
+     /* now finally analyze flags using paramaters: */
+     for (i = 0; i < 3; i++) {
+       switch (i) {
+         case 0: pszOut = ppar->szSyntOut;
+                 ppszSel = &(plexItem->pszSynt);
+                 break;
+         case 1: pszOut = ppar->szSemOut;
+                 ppszSel = &(plexItem->pszSem);
+                 break;
+         case 2: pszOut = ppar->szStyleOut;
+                 ppszSel = &(plexItem->pszStyle);
+                 break;
+       }
+       iSel = 0;
+       pchFlag = szFlags;
+       *ppszSel = FreeString(plex);
+       while (*pchFlag != HB_EOS) {
+         iFlag = 0;
+         if ((iRC = 
+              AddChar(szFlag,*pchFlag,&iFlag,HB_STRINGMAX)) > 0) {
+           return 19700+iRC;
+         }         
+         pchFlag++;
+         while (*pchFlag != HB_EOS && *pchFlag != HF_EXPL_SPACE) {
+           if ((iRC = 
+                AddChar(szFlag,*pchFlag,&iFlag,HB_STRINGMAX)) > 0) {
+             return 19800+iRC;
+           }         
+           pchFlag++;
+         }
+         szFlag[iFlag] = HB_EOS;
+/**/ /* fprintf(stderr,"flag check: %s x %s\n",szFlag,pszOut); /**/
+         /* now in szFlag is the current flag from data (hf) */
+
+
+         /* check if in current parameter (pszOut): */
+         pchOut = pszOut;
+         while (*pchOut != HB_EOS) { 
+           /* search parameter string of flag strings */
+           iFlag = 0;
+           if (*pchOut == szFlag[iFlag]) { 
+               /* must be HF_EXPL_SPACE -- skip it */
+             pchOut++;
+             iFlag++;
+           }
+           while (*pchOut != HB_EOS && *pchOut != HF_EXPL_SPACE) {
+/**/ /* fprintf(stderr,"chars: <%c> x <%c>\n",*pchOut,szFlag[iFlag]); /**/
+             if (*pchOut == szFlag[iFlag]) { 
+               pchOut++;
+               iFlag++;
+             }
+             else {
+               break;
+             }
+           }
+           if ((*pchOut == HB_EOS || *pchOut == HF_EXPL_SPACE) &&
+               szFlag[iFlag] == HB_EOS) { /* found */
+             /* put szFlag into *ppszSel */
+             iFlag = 0; 
+             while (szFlag[iFlag] != HB_EOS) {
+/**/ /* fprintf(stderr,"adding: <%c>\n",szFlag[iFlag]); /**/
+               if ((iRC = 
+                  AddChar(plex->szArea,
+                     szFlag[iFlag],&(plex->iAreaFree),MCF_MAXINFO)) > 0) {
+                  return 19900+iRC;
+               }
+               iFlag++;
+             }
+           } /* found */
+           while (*pchOut != HB_EOS && *pchOut != HF_EXPL_SPACE) {
+             pchOut++;
+           }
+         } /* of parameter string search */
+       } /* of analyzing flags */
+       CloseString(plex);
+     } /* of for loop for synt, sem, style */
+
+     plexItem->fDelLexItem = 0; /* flag: default: do not delete item rec */
+
+     plex->cItems++; /* no of items, and also ptr to free rglexItem */
+     if (plex->cItems >= MCF_MAXLEXINFO) {
+       fprintf(stderr,
+       "%s: too many info items (> %d) for lemma: %s\n",
+         szPN,MCF_MAXLEXINFO,pszLemmaIn);
+       plex->cItems--;
+       return 291;
+     }
+   } /* of while *pch == HF_PATSEP_CHAR, or not HB_EOS: loop over info parts */
+
+   if (plex->cItems == 0) {
+     fprintf(stderr,
+     "%s: end-of-lemma (\'%c\') not found in: %s\n",
+       szPN,HF_PATSEP_CHAR,pszLemmaIn);
+     return 201;
+   }
+   /* the explanation will need spec tag and have to tell sgdis (Karel Sk.) */
+   return 0;
+} /* of AddToIntStruct */
+
+FUNDEF2(int IgnoreLexCat,
+char *, szIgnore,
+char *, szLexIn)
+{
+char *pchLexIn;
+
+   /* returns 1 if szLexIn should be ignored based on ignore-Lex-list
+      at szIgnore */
+
+   pchLexIn = szLexIn;
+   while (*pchLexIn != HB_EOS) {
+     if (*pchLexIn == HF_EXPL_SPACE) { /* yes, variant found, check against
+                                szIgnore */
+       pchLexIn++;
+       if (*pchLexIn == HB_EOS) {
+         /* wrong Lex format?! */
+         fprintf(fLog,
+         "%s: Lex ends by %c !?: %s\n",
+           szPN,HF_EXPL_SPACE,szLexIn);
+         return 1; /* ignore such Lexs */
+       }
+/**/ /* fprintf(stderr,"cmp / ign %s, (%s) %s\n",szIgnore,szLexIn,pchLexIn); */
+
+       if (strchr(szIgnore,(int)(*pchLexIn)) != NULL) {
+
+/**/ /*fprintf(stderr,"deleting %s\n",szLexIn);*/
+/**/ /* fprintf(fLog,"deleting %s\n",szLexIn); */
+
+         return 1; /* found, should ignore */
+       } /* of found & return 1 */
+     } /* of test (HF_EXPL_SPACE found in LexIn) */
+     pchLexIn++;
+   } /* of loop over input Lex string */
+   /* none found, should not ignore */
+   return 0;
+} /* of IgnoreLexCat */
+
+FUNDEF3(int IgnoreLex,
+lexRecItemType *, plexItem,
+char *, szIgnore,
+char, fDelFlag)
+{
+
+  if (IgnoreLexCat(szIgnore,plexItem->pszSynt) ||
+      IgnoreLexCat(szIgnore,plexItem->pszSem) ||
+      IgnoreLexCat(szIgnore,plexItem->pszStyle)) {
+      plexItem->fDelLexItem = fDelFlag;
+  }
+  /* else leave flag intact */
+  return 0;
+} /* of IgnoreLex */
+
+FUNDEF2(int IgnoreTag,
+char *, szIgnore,
+char *, szTagIn)
+{
+char *pchTagIn;
+int i;
+   /* returns 1 if szTagIn should be ignored based on ignore-tag-list
+      at szIgnore */
+   /* THIS IS A COMPLETE HACK - we don;tknow tag format (compact/pos);
+      for positional tags, this hack works only if last-but-one-position
+      is always -, and for both systems, the tag variant can be one 
+      letter only !!!!!!!!!!!! */
+
+   pchTagIn = szTagIn;
+   i = 0;
+   while (*pchTagIn != HB_EOS) {
+     pchTagIn++;
+     i++;
+   }
+   if (i < 3) {
+     return 0; /* cannot have variant */
+   }
+   pchTagIn--;
+   pchTagIn--;
+   if (*pchTagIn == '-') { /* yes, variant found, check against
+                                szIgnore */
+     pchTagIn++;
+     if (*pchTagIn == HB_EOS) {
+       /* wrong tag format?! */
+       fprintf(fLog,
+         "%s: tag ends by '-' !?: %s\n",
+           szPN,szTagIn);
+       return 1; /* ignore such tags */
+     }
+/**/ /*fprintf(stderr,"cmp / ign %s, (%s) %s\n",szIgnore,szTagIn,pchTagIn);*/
+
+     if (strchr(szIgnore,(int)(*pchTagIn)) != NULL) {
+
+/**/ /*fprintf(stderr,"deleting %s\n",szTagIn);*/
+/**/ /* fprintf(fLog,"deleting %s\n",szTagIn); */
+
+       return 1; /* found, should ignore */
+     }
+     else {
+       return 0;
+     }
+   } /* found VAR */
+   return 0;
+} /* of IgnoreTag */
+
+FUNDEF3(int IgnoreTags,
+lexRecItemType *, plexItem,
+char *, szIgnore,
+char, fDelFlag)
+{
+char *pszTag;
+int iTag;
+  for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+    if (IgnoreTag(szIgnore,plexItem->rgpszTag[iTag])) {
+      plexItem->rgfDelTag[iTag] = fDelFlag;
+    }
+    /* else leave flag intact */
+  } /* of llop over all tags from plexItem */
+  return 0;
+} /* of IgnoreTags */
+
+
+FUNDEF2(int MakeAmbClass, 
+AmbClassRecType *, par,
+char *, pszIn)
+{
+char *pch;
+char szTagTag[20];
+char *pchTagTag;
+char szTag[HF_MAXTAG];
+char *pchTag;
+char *pszTagNext;
+int iTag;
+int fFound;
+int iCmp;
+int iTagMove;
+
+   strcpy(szTagTag,MPHOUT_TAG);
+   pch = pszIn;
+   while (*pch != HB_EOS) {
+     if (pch != pszIn) { /* there is no "<t>" at the beg. of pszIn ! */
+       pchTagTag = szTagTag;
+       while (*pchTagTag != HB_EOS) {
+         if (*pch++ != *pchTagTag++) return 1;
+       }
+     }
+     pchTag = szTag;
+     while (*pch != *szTagTag && *pch != HB_EOS) {
+       /* copy active tag to szTag */
+       *pchTag++ = *pch++;
+     }
+     *pchTag = HB_EOS;
+     /* now insert szTag into par: */
+     fFound = 0;
+/**/ /* fprintf(stderr,"searching for %s\n",szTag); /**/
+     for (iTag = 0; iTag < par->cTags; iTag++) {
+       iCmp = strcmp(par->rgTags[iTag],szTag);
+       if (iCmp == 0) { 
+         fFound = 1;
+         break; 
+       }
+       if (iCmp > 0) {
+         /* szTag should go before iTag */
+         break;
+       } 
+     } /* searching for szTag */
+     if (!fFound) {
+       /* insert szTag before iTag */
+       /* first make room by moving all greater ptrs up */
+/**/ /* fprintf(stderr,"inserting %s\n",szTag); /**/
+       if (par->cTags >= HF_MAXNO_RESULTS-1) {
+         fprintf(stderr,
+         "%s: too many tags in MakeAmbClass (> %d) when analyzing %s\n",
+           szPN,HF_MAXNO_RESULTS,pszIn);
+         return 2;
+       }
+       par->cTags++;
+       for (iTagMove = par->cTags; iTagMove > iTag; iTagMove--) {
+         par->rgTags[iTagMove] = par->rgTags[iTagMove-1];
+       }
+       /* now insert new tag into string area: */
+       strcpy(par->szTags+par->iTagFree,szTag);
+       par->rgTags[iTag] = par->szTags + par->iTagFree;
+       par->iTagFree += strlen(szTag) + 1;
+     } 
+   } /* of while not HB_EOS */
+   return 0;
+} /* of MakeAmbClass */
+
+FUNDEF4(int AnythingToPrint,
+lexRecType **, rgplex,
+int, crglexMax,
+int, fFlagLexOut,
+int, fFlagTagOut)
+{
+int irglex;
+int irgItem;
+lexRecItemType *plexItem;
+lexRecType *plex;
+int iTag;
+
+  /* fFlagOut assumed to show what may be printed: usually first
+     called with FLAGNOTDEL, then (if nothing remains) again
+     with FLAGDELCOND; be careful with both flag params! */
+  /* also, ordering of FLAG... values is important - inequalities <= used! */
+  for (irglex = 0; irglex < crglexMax; irglex++) {
+    plex = rgplex[irglex];
+    for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+      plexItem = &(plex->rglexItem[irgItem]);
+      if (plexItem->fDelLexItem <= fFlagLexOut) { 
+            /* item (possibly) for output */
+        for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+          if (plexItem->rgfDelTag[iTag] <= fFlagTagOut) {
+            return 1;
+          }
+        } /* of loop over tags of item */
+      } /* of if the whole item not deleted */
+    } /* of for items of a lex. record */
+  } /* of for all lex records */
+  return 0; /* well, everything deleted! */
+} /* of AnythingToPrint */
+
+FUNDEF5(int ItemToPrint,
+lexRecType **, rgplex,
+int, irglex,
+int, irgItem,
+int, fFlagLexOut,
+int, fFlagTagOut)
+{
+lexRecItemType *plexItem;
+lexRecType *plex;
+int iTag;
+
+  /* fFlagOut assumed to show what may be printed: usually first
+     called with FLAGNOTDEL, then (if nothing remains) again
+     with FLAGDELCOND; be careful with both flag params! */
+  /* also, ordering of FLAG... values is important - inequalities <= used! */
+  plex = rgplex[irglex];
+  plexItem = &(plex->rglexItem[irgItem]);
+  if (plexItem->fDelLexItem <= fFlagLexOut) { 
+        /* item (possibly) for output */
+    for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+      if (plexItem->rgfDelTag[iTag] <= fFlagTagOut) {
+        return 1;
+      }
+    } /* of loop over tags of item */
+  } /* of if the whole item not deleted */
+  return 0; /* well, everything deleted! */
+} /* of ItemToPrint */
+
+FUNDEF4(int SetOutFlags,
+lexRecType **, rgplex,
+int, crglexMax,
+int *, pfLexOut,
+int *, pfTagOut)
+{
+int fLexOut;
+int fTagOut;
+
+  /* returns 1 if there something remains to be printed out;
+     in this case, sets flags accordingly */
+  *pfLexOut = FLAGNOTDEL;
+  *pfTagOut = FLAGNOTDEL;
+  /* first, check if anything left after selections/deletions: */
+  for (fLexOut = FLAGNOTDEL; fLexOut <= FLAGDELCOND; fLexOut++) {
+    for (fTagOut = FLAGNOTDEL; fTagOut <= FLAGDELCOND; fTagOut++) {
+      if (AnythingToPrint(rgplex,crglexMax,fLexOut,fTagOut)) {
+        *pfLexOut = fLexOut;
+        *pfTagOut = fTagOut;
+        return 1;
+      }
+    }
+  }
+  return 0;
+  /* ...and never print items marked for deletion in any case, FLAGDELALWAYS */
+} /* of SetOutFlags */
+
+FUNDEF6(int PrintLex,
+lexRecType **, rgplex,
+int, crglexMax,
+int, fLexOut,
+int, fTagOut,
+int, fAll,
+char *, pszOut)
+{
+int irglex;
+int irgItem;
+lexRecItemType *plexItem;
+lexRecType *plex;
+int iTag;
+int fOut;
+int cOut;
+char *pszOutStart;
+
+  cOut = 0;
+  pszOutStart = pszOut; /* remember output string start */
+  *pszOut = HB_EOS;
+/**/ /* fprintf(stderr,"lemmas: %d\n",crglexMax); /**/
+  for (irglex = 0; irglex < crglexMax; irglex++) {
+    plex = rgplex[irglex];
+    if (fAll < 0) { /* print first lemma as if fAll == 0 no matter what 
+                       i.e. for no lemma in input, but update forced */
+      fAll = 0;
+      plex->fLemDisamb = 1;
+      plexItem = &(plex->rglexItem[0]);
+      plexItem->rgfTagDisamb[0] = 1;
+    }
+    if (fAll) {
+      /* print lemma only if at least one of the headers will be printed: */
+      for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+        plexItem = &(plex->rglexItem[irgItem]);
+        if (plexItem->fDelLexItem == fLexOut) { /* item marked for output */
+          break;
+        }
+      }
+      if (irgItem == plex->cItems) continue; /* no, nothing to print for this
+                 lemma; don't worry about empty output -- it cannot happen
+                 as SetOutFlags checks for zero output */    
+    }
+    else { /* not all -- only disambiguated: */
+      if (!plex->fLemDisamb) continue; /* do nothing for this lemma */
+    }
+/**/ /* fprintf(stderr,"lemma items: %d\n",plex->cItems); /**/
+    /* first, work for both fAll and !fAll: output only if lemma ok: */
+    for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+      plexItem = &(plex->rglexItem[irgItem]);
+      fOut = 0; /* suppose item output suppressed */
+      if (plexItem->fDelLexItem == fLexOut) {
+        fOut = 1;
+      }
+      if (fOut) { /* item for output */
+        if ((iRC = 
+               SprintCesFormat(pszOut,plex,plexItem,pparMain,fTagOut,fAll))
+          > 0) {
+          fprintf(stderr,"%s: SprintCesFormat(%d), at %s.\n",szPN,iRC,pszOut);
+          return 868;
+        }
+        if (iRC == 0) cOut++;
+      } /* of item printable as a whole */
+    } /* of loop over items of a lex (lemma) */
+    if (!fAll) { /* fAll == 0 (<l>/<t> disamb. output) */
+      /* output disamb l/t if no output yet even if marked for deletion */
+      for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+        plexItem = &(plex->rglexItem[irgItem]);
+        if (cOut == 0) { /* item for output */
+          if ((iRC = 
+                 SprintCesFormat(pszOut,plex,plexItem,pparMain,fTagOut,fAll))
+            > 0) {
+            fprintf(stderr,"%s: SprintCesFormat(%d), at %s.\n",szPN,iRC,pszOut);
+            return 869;
+          }
+          if (iRC == 0) { /* something out (< 0 if not) */ 
+            break; /* one output is enough! */
+          }
+        } /* of item printable as a whole */
+      } /* of loop over items of a lex (lemma) */
+    } /* of not fAll */
+  } /* of for all lex records */
+  if (*pszOutStart == HB_EOS) { /* no output... */
+    return 1;
+  }
+  /**/ /* fprintf(stderr,"%s",pszOut); */ /**/
+  return 0;
+} /* of PrintLex */
+
+FUNDEF6(int MakeAmbRec,
+AmbClassRecType *, par,
+lexRecType **, rgplex,
+int, crglexMax,
+int, fLexOut,
+int, fTagOut,
+int, fAll)
+{
+int irglex;
+int irgItem;
+lexRecItemType *plexItem;
+lexRecType *plex;
+int iTag;
+int fOut;
+int iTagAR;
+int iCmp;
+int fFound;
+int iTagMove;
+
+  for (irglex = 0; irglex < crglexMax; irglex++) {
+    plex = rgplex[irglex];
+    /* consider lemma only if at least one of headers will be printed: */
+    for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+      plexItem = &(plex->rglexItem[irgItem]);
+      if (plexItem->fDelLexItem == fLexOut) { /* item marked for output */
+        break;
+      }
+    }
+    if (fAll || !plex->fLemDisamb) { /* either input lemma not found 
+                                        or this one not marked for output */ 
+      /* well this whole test is somewhat questionable --
+         outputs the disambiguated tag even if all MMl/MMt output
+         disabled by params... but leaving it as it is for now */
+      if (irgItem == plex->cItems) continue; /* no, nothing to print for this
+               lemma; don't worry about empty output -- it cannot happen
+               as SetOutFlags checks for zero output */    
+    }
+    /* else always output tags */
+    for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+      plexItem = &(plex->rglexItem[irgItem]);
+      if (!fAll || plexItem->fDelLexItem == fLexOut) { /* item for output */
+        for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+          if ((plexItem->rgfDelTag[iTag] == fTagOut) ||
+              (!fAll && plexItem->rgfTagDisamb[iTag])) { /* insert tag
+                      into par even if not to be output normally,
+                      but output from hand-input */
+            /* now insert rgpszTag[iTag] into par: */
+            fFound = 0;
+            for (iTagAR = 0; iTagAR < par->cTags; iTagAR++) {
+              iCmp = strcmp(par->rgTags[iTagAR],plexItem->rgpszTag[iTag]);
+              if (iCmp == 0) { 
+                fFound = 1;
+                break; 
+              }
+              if (iCmp > 0) {
+                /* szTag should go before iTagAR */
+                break;
+              } 
+            } /* searching for rgpszTag[iTag] */
+            if (!fFound) {
+              /* insert szTag before iTagAR */
+              /* first make room by moving all greater ptrs up */
+              if (par->cTags >= HF_MAXNO_RESULTS-1) {
+                fprintf(stderr,
+                "%s: too many tags in MakeAmbRec (> %d), lemma %s, tag %s\n",
+                szPN,HF_MAXNO_RESULTS,plex->pszLem,plexItem->rgpszTag[iTag]);
+                return 20;
+              }
+              par->cTags++;
+              for (iTagMove = par->cTags; iTagMove > iTagAR; iTagMove--) {
+                par->rgTags[iTagMove] = par->rgTags[iTagMove-1];
+              }
+              par->rgTags[iTagAR] = plexItem->rgpszTag[iTag];
+            } /* of inserting a tag */
+          } /* of item 'printable ' */
+        } /* of loop over inserting tags */
+      } /* of item printable as a whole */
+    } /* of loop over items of a lex (lemma) */
+  } /* of for all lex records */
+
+  return 0;
+} /* of MakeAmbRec */
+
+FUNDEF3(int MergeFlags,
+lexRecType *, plex, /* for szArea */
+char **, ppszFlagResult,
+char **, ppszFlagToBeMerged)
+{
+char *pchFlagResult;
+char *pszFlagResult;
+char *pchFlagToBeMerged;
+char szTempResult[HB_STRINGMAX];
+char szFinalResult[HB_STRINGMAX];
+char *rgszFlagRes[HF_MAX_FLAGS];
+int cszFlagRes; /* last flag in rgszFlagRes */
+char *pchRes;
+char *pchFinalRes;
+int iFlag;
+int iMinFlag;
+char *pszMinFlag;
+char *pszLastMinFlag;
+char *pszT;
+int iCmp;
+
+   /* merges two strings of flags, output string sorted! */
+   /* may be zero strings, or in format: flag_flag_flag */
+
+/**/ /* fprintf(stderr,"MergeFlags in: res: <%s>, tbm: <%s>\n",*ppszFlagResult,
+                    *ppszFlagToBeMerged); /**/
+
+   pchFlagToBeMerged = *ppszFlagToBeMerged;
+   pszFlagResult = pchFlagResult = *ppszFlagResult;
+
+   pchRes = szTempResult;
+   rgszFlagRes[0] = pchRes;
+   cszFlagRes = 1;
+   /* copying flags to TempResult: */
+   if (*pchFlagResult == HF_EXPL_SPACE) pchFlagResult++;
+   while (*pchFlagResult != HB_EOS) {
+     if (*pchFlagResult == HF_EXPL_SPACE) {
+       *pchRes++ = HB_EOS;
+       if (pchFlagResult[1] != HB_EOS) {
+         rgszFlagRes[cszFlagRes++] = pchRes; /* next */
+       }
+     }
+     else 
+       *pchRes++ = *pchFlagResult;
+     pchFlagResult++;
+   }
+   *pchRes++ = HB_EOS;
+   rgszFlagRes[cszFlagRes++] = pchRes; /* next, first of second param. */
+   if (*pchFlagToBeMerged == HF_EXPL_SPACE) pchFlagToBeMerged++;
+   while (*pchFlagToBeMerged != HB_EOS) {
+     if (*pchFlagToBeMerged == HF_EXPL_SPACE) {
+       *pchRes++ = HB_EOS;
+       if (pchFlagToBeMerged[1] != HB_EOS) {
+         rgszFlagRes[cszFlagRes++] = pchRes; /* next */
+       }
+     }
+     else 
+       *pchRes++ = *pchFlagToBeMerged;
+     pchFlagToBeMerged++;
+   }
+   *pchRes = HB_EOS;
+
+   /* extracting flags from TempResult one by one, smallest first: */
+   *ppszFlagResult = FreeString(plex);
+   pszLastMinFlag = NULL;
+
+/**/ /* for (iFlag = 0; iFlag < cszFlagRes; iFlag++) {
+       fprintf(stderr,"flag %d: <%s>\n",iFlag,rgszFlagRes[iFlag]);
+     } /**/
+
+   while (cszFlagRes != 0) {
+     iMinFlag = 0;
+     pszMinFlag = rgszFlagRes[0];
+     for (iFlag = 1; iFlag < cszFlagRes; iFlag++) {
+       iCmp = strcmp(pszMinFlag,rgszFlagRes[iFlag]);
+       if (iCmp > 0) { /* current min greater, save new min */
+         iMinFlag = iFlag;
+         pszMinFlag = rgszFlagRes[iFlag];
+       }
+     } /* of loop over all separated flag names */
+     if ((pszLastMinFlag == NULL || strcmp(pszMinFlag,pszLastMinFlag)) &&
+         *pszMinFlag != HB_EOS) {
+       if ((iRC = 
+         AddChar(plex->szArea,HF_EXPL_SPACE,
+                              &(plex->iAreaFree),MCF_MAXINFO)) > 0) {
+         return 17000+iRC;
+       }
+       pchFinalRes = pszMinFlag;
+/**/ /* fprintf(stderr,"adding flag: <%s>\n",pszMinFlag); /**/
+       while (*pchFinalRes != HB_EOS) {
+         if ((iRC = 
+           AddChar(plex->szArea,*pchFinalRes,
+                                &(plex->iAreaFree),MCF_MAXINFO)) > 0) {
+           return 18000+iRC;
+         }
+         pchFinalRes++;
+       }  
+       pszLastMinFlag = pszMinFlag;
+     }
+     rgszFlagRes[iMinFlag] = rgszFlagRes[cszFlagRes-1];
+     cszFlagRes--;
+   }
+   CloseString(plex);
+   return 0;
+} /* of MergeFlags */
+
+FUNDEF4(int MergeLex,
+lexRecType **, rgplex,
+int, crglexMax,
+int, fLexOut,
+int, fTagOut)
+{
+int irglex;
+int irgItem;
+lexRecType *plex;
+lexRecItemType *plexItem;
+int iTag;
+int fOut;
+int irgItemCmp;
+lexRecItemType *plexItemCmp;
+int iTagCmp;
+int iCmpRes;
+int iTagMove;
+
+  /* merge "same" (== after deletions) results into one for print */
+ 
+  /* first, mark lex items as deleted if no tag will be output: */
+  for (irglex = 0; irglex < crglexMax; irglex++) {
+    plex = rgplex[irglex];
+    for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+      plexItem = &(plex->rglexItem[irgItem]);
+      if (plexItem->fDelLexItem == fLexOut) { /* item for output */
+        for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+          if (plexItem->rgfDelTag[iTag] == fTagOut) {
+            break;
+          } /* of "printing" a tag */
+        } /* of loop over "printing" tags */
+        if (iTag == plexItem->cTags) { /* no tag "printed" */
+          plexItem->fDelLexItem = FLAGDELALWAYS;
+        }
+      } /* of item printable as a whole */
+    } /* of loop over items of a lex (lemma) */
+  } /* of for all lex records */
+
+  /* check if any repetitions of <lemma,sss,tag> (mark them for deletion) */
+  for (irglex = 0; irglex < crglexMax; irglex++) {
+    plex = rgplex[irglex];
+    for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+      plexItem = &(plex->rglexItem[irgItem]);
+      if (plexItem->fDelLexItem == fLexOut) { /* item (possibly) for output */
+        /* now check back if tags should be compared: */
+        /* search for same <lemma,sss> item */
+        for (irgItemCmp = 0; irgItemCmp < irgItem; irgItemCmp++) {
+          plexItemCmp = &(plex->rglexItem[irgItemCmp]);
+          if (plexItemCmp->fDelLexItem == fLexOut) { /* item for output */
+            /* do not check against item deleted, of course */
+            if (strcmp(plexItem->pszSynt,plexItemCmp->pszSynt) ||
+                strcmp(plexItem->pszSem,plexItemCmp->pszSem) ||
+                strcmp(plexItem->pszStyle,plexItemCmp->pszStyle)) {
+              /* lemma same, but flags not: should report!! */
+              fprintf(fLog,
+                "%s: Lemma <%s> with different flags: %s %s %s vs. %s %s %s\n",
+                     szPN,plex->pszLem,
+                     plexItem->pszSynt,plexItem->pszSem,plexItem->pszStyle,
+                     plexItemCmp->pszSynt,plexItemCmp->pszSem,
+                                               plexItemCmp->pszStyle);
+            }
+            /* the following test remains just for change tracing: */
+            if (1/*!strcmp(plexItem->pszSynt,plexItemCmp->pszSynt) &&
+                !strcmp(plexItem->pszSem,plexItemCmp->pszSem) &&
+                !strcmp(plexItem->pszStyle,plexItemCmp->pszStyle)*/) {
+              /* same items: should merge tags: */
+              for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+                if (plexItem->rgfDelTag[iTag] == fTagOut) {
+                  /* no sense to check deleted tags... */
+                  for (iTagCmp = 0; iTagCmp < plexItemCmp->cTags; iTagCmp++) {
+                    /* again, check only against tags to be output: */
+                    if (plexItemCmp->rgfDelTag[iTagCmp] == fTagOut) {
+                      iCmpRes = strcmp(plexItem->rgpszTag[iTag],
+                                  plexItemCmp->rgpszTag[iTagCmp]);
+                      if (iCmpRes == 0) {
+                        /* tags same, ignore the current tag */
+                        break;
+                      } /* of tags same */
+                      if (iCmpRes < 0) { /* tag to be added is smaller:
+                                            insert here */
+/**/ /* fprintf(stderr,"inserting tag: %s\n",plexItem->rgpszTag[iTag]); /**/
+                        if (plexItemCmp->cTags < HF_MAXNO_TAGS) {
+                          plexItemCmp->cTags++;
+                          for (iTagMove = plexItemCmp->cTags;
+                               iTagMove > iTagCmp;
+                               iTagMove--) {
+                            plexItemCmp->rgpszTag[iTagMove] =
+                              plexItemCmp->rgpszTag[iTagMove-1];
+                            plexItemCmp->rgpszPat[iTagMove] =
+                              plexItemCmp->rgpszPat[iTagMove-1];
+                            plexItemCmp->rgfDelTag[iTagMove] =
+                              plexItemCmp->rgfDelTag[iTagMove-1];
+                          }
+                          plexItemCmp->rgpszTag[iTagCmp] = 
+                            plexItem->rgpszTag[iTag];
+                          plexItemCmp->rgpszPat[iTagCmp] = 
+                            plexItem->rgpszPat[iTag];
+                          plexItemCmp->rgfDelTag[iTagCmp] = 
+                            plexItem->rgfDelTag[iTag];
+                        }
+                        else {
+                          fprintf(fLog,
+                          "%s: %s (> %d) for lemma: %s (ignored: %s)\n",
+                            szPN,"too many tags",HF_MAXNO_TAGS,
+                            plex->pszLem,plexItem->rgpszTag[iTag]);
+                        }
+                        break;
+                      }
+                    } /* of Cmp tag marked for output */
+                  } /* of loop over previous lex's tags */
+                  if (iTagCmp == plexItemCmp->cTags) { 
+                    /* not found in Cmp lex, will move there 'new' tag: */
+                    if (iTagCmp < HF_MAXNO_TAGS) {
+                      plexItemCmp->rgpszTag[iTagCmp] = 
+                        plexItem->rgpszTag[iTag];
+                      plexItemCmp->rgpszPat[iTagCmp] = 
+                        plexItem->rgpszPat[iTag];
+                      plexItemCmp->rgfDelTag[iTagCmp] = 
+                        plexItem->rgfDelTag[iTag];
+                      plexItemCmp->cTags++; /* == iTagCmp+1 */
+                    }
+                    else {
+                      fprintf(fLog,
+                      "%s: too many tags (> %d) for lemma: %s (ignored: %s)\n",
+                        szPN,HF_MAXNO_TAGS,
+                        plex->pszLem,plexItem->rgpszTag[iTag]);
+                    }
+                  } /* of iTag not found in plexItemCmp */
+                } /* of checking a tag */
+              } /* of loop over checking (moving) tags */
+              /* now keep longer description and mark second item
+                 for deletion: */
+              if (strlen(plexItem->pszDesc) > strlen(plexItemCmp->pszDesc)) {
+                plexItemCmp->pszDesc = plexItem->pszDesc; /* change desc */
+              }
+              if (MergeFlags(plex,&(plexItemCmp->pszSynt),
+                                  &(plexItem->pszSynt)) > 0) return 270;
+              if (MergeFlags(plex,&(plexItemCmp->pszSem),
+                                  &(plexItem->pszSem)) > 0) return 271;
+              if (MergeFlags(plex,&(plexItemCmp->pszStyle),
+                                  &(plexItem->pszStyle)) > 0) return 272;
+              plexItem->fDelLexItem = FLAGDELALWAYS;
+            } /* of same items */
+          } /* of item marked for output from SetOutFlags */
+        } /* of loop over previous items for comparison */
+      } /* of item printable as a whole */
+    } /* of loop over items of a lex (lemma) */
+  } /* of for all lex records */
+  return 0;
+} /* of MergeLex */
+
+FUNDEF5(int MarkAtOneLevelForDeletion,
+lexRecType **, rgplex,
+int, crglexMax,
+char *, szLexDel,
+char *, szVarDel,
+int, fDel)
+{
+int irglex;
+int irgItem;
+lexRecType *plex;
+lexRecItemType *plexItem;
+int iTag;
+
+  /* fDel assumed to contain "deletion flag" (always/ conditional) */
+
+  for (irglex = 0; irglex < crglexMax; irglex++) {
+    plex = rgplex[irglex];
+    for (irgItem = 0; irgItem < plex->cItems; irgItem++) {
+      plexItem = &(plex->rglexItem[irgItem]);
+      /* now, set plexItem->fDelLexItem: */
+      if (IgnoreLex(plexItem,szLexDel,fDel)) {
+        return 884; /* some fatal int error */
+      }
+      for (iTag = 0; iTag < plexItem->cTags; iTag++) {
+        /* now, set tags deletion flags: */
+        if (IgnoreTags(plexItem,szVarDel,fDel))
+          return 883; /* some serious internal error */
+      } /* of loop over tags of item */
+    } /* of for items of a lex. record */
+  } /* of for all lex records */
+  return 0; /* well, everything deleted! */
+} /* of MarkAtOneLevelForDeletion */
+
+FUNDEF3(int MarkForDeletion,
+lexRecType **, rgplex,
+int, crglexMax,
+parRecType *, ppar)
+{
+int irglex;
+int fOut;
+int irgItem;
+lexRecItemType *plexItem;
+lexRecType *plex;
+int iTag;
+
+  /* first, mark items to be deleted only if nothing else remains: */
+  if (MarkAtOneLevelForDeletion(rgplex,crglexMax,
+                  ppar->szLexDelIfExtra,ppar->szVarDelIfExtra,FLAGDELCOND)) {
+    return 881;
+  }
+  /* now mark items which should always be delted; takes precedence! */
+  if (MarkAtOneLevelForDeletion(rgplex,crglexMax,
+                  ppar->szLexDelAlways,ppar->szVarDelAlways,FLAGDELALWAYS)) {
+    return 882;
+  }
+  return 0;
+} /* of MarkForDeletion */
+
+FUNDEF2(int
+InsertSortLastLex,
+lexRecType **, rgplex,
+int *, pcrglexMax)
+{
+  /* insert sort of the last item (crgLexMax-1) into rglex
+     pcrgLexMax might be decreased in the future if identical
+     record found: now it should not happen JH 03.09.97 */
+int crglex;
+int irglex;
+int irglexMoving;
+lexRecType *plexT;
+lexRecType *plexLast;
+lexRecType *plexChk;
+char szcLemmaLast[HB_STRINGMAX];
+char szcLemmaChk[HB_STRINGMAX];
+
+  crglex = *pcrglexMax - 1; /* last lex record */
+  plexLast = rgplex[crglex];
+  /* tags already sorted from AddToIntStruct! */
+
+  /* insert sort lemma itself: */
+  for (irglex = 0; irglex < crglex; irglex++) {
+    plexChk = rgplex[irglex];
+    hf_cvs(plexLast->pszLem,szcLemmaLast);
+    hf_cvs(plexChk->pszLem,szcLemmaChk);
+    if (strcmp(szcLemmaLast,szcLemmaChk) < 0) {
+      /* smaller - insert before */
+      plexT = plexLast;
+      /* shift all the rest back (+1): */
+      for (irglexMoving = crglex - 1; irglexMoving >= irglex; irglexMoving--) {
+        /* move just the poniter */
+        rgplex[irglexMoving+1] = rgplex[irglexMoving];
+      }
+      rgplex[irglex] = plexT; /* inserted record */
+      break;
+    } /* of smaller -- insert */
+  } /* of for loop over previous lex records */
+  return 0;
+} /* of InsertSortLastLex */
+
+FUNDEF4(int MMt2DictAlt,
+char *, szMMTSIn,
+char *, szAltOut,
+int, cOutMax,
+int, fAltPos)
+{
+char szResult[HB_LONGSTRINGMAX];
+char szT[HB_STRINGMAX];
+int fEOT;
+int fTag1;
+char *pchMMTS;
+char *pszTag;
+char *pszTagStart;
+
+  pchMMTS = szMMTSIn; /* for parsing the cumulative structure */
+  *szResult = HB_EOS;
+  fEOT = 0;
+  fTag1 = 1;
+  while (fEOT == 0) {
+    while (*pchMMTS != HB_EOS &&
+           *pchMMTS != '>') { /* ignoring the <MMt> SGML tag */
+      pchMMTS++;
+    }
+    if (*pchMMTS == HB_EOS) {
+      break; /* in fact, this is a data error... */
+    }
+    pchMMTS++; /* skip the closing '>' of the <MMt> */
+    pszTagStart = pchMMTS;
+    while (*pchMMTS != HB_EOS &&
+      *pchMMTS != '<') {
+      if (*pchMMTS == UNKRULESEP) {
+        pszTagStart = pchMMTS + 1; /* remember last separator, plus one */
+      }
+      pchMMTS++; /* go through tag */
+    }
+    if (*pchMMTS == HB_EOS) {
+      fEOT = 1;
+      *pchMMTS = HB_EOS;
+    }
+    else {
+      *pchMMTS++ = HB_EOS; /* must move over to next MMt tag (if any) */
+    }
+    if (fTag1 != 1) {
+      strcpy(szT," ");
+      szT[0] = HF_TAG_ALT;
+      strcat(szResult,szT);
+    }
+    else {
+      fTag1 = 0;
+    }
+    strcat(szResult,pszTagStart);
+  } /* of while adding tags */
+  if (fAltPos != 0) {
+    strcpy(szT,"__"); /* for compulsory Alt. POS */
+    szT[1] = pszTagStart[0]; /* take it from letter 1 of (last) tag */
+    if (strstr("ANVD",szT+1) == NULL) {
+      if (!strcmp(szT+1,"C")) {
+        strcpy(szT+1,"M"); /* convert back to compact POS letters */
+      }
+      else if (!strcmp(szT+1,"T")) {
+        strcpy(szT+1,"I"); /* convert back to compact POS letters */
+      }
+      else if (!strcmp(szT+1,"R")) {
+        strcpy(szT+1,"P"); /* convert back to compact POS letters */
+      }
+      else if (!strcmp(szT+1,"J")) {
+        strcpy(szT+1,"A"); /* convert back to compact POS letters */
+      }
+      else if (!strcmp(szT+1,"P")) {
+        strcpy(szT+1,"Z"); /* convert back to compact POS letters */
+      }
+      else if (!strcmp(szT+1,"I")) {
+        strcpy(szT+1,"F"); /* convert back to compact POS letters */
+      }
+    }
+    /**/ /**** fprintf(stderr,"added compulsory altpos: %s\n",szT); /**/
+    strcat(szResult,szT);
+  }
+  if (strlen(szResult) > cOutMax) {
+    fprintf(stderr,"%s: too long out list of tags: %s\n",szPN,szResult);
+    return 1;
+  }
+  strcpy(szAltOut,szResult);
+  return 0;
+} /* of MMt2DictAlt */
+
+FUNDEF6(int CreateResultFromUnknown,
+parRecType *, ppar,
+int *, pcResults,
+char *, pszLemma,
+char *, pszMMTS,
+int *, pcrglexMax,
+lexRecType **, rgplex)
+{
+int iRC;
+char szKey[HB_STRINGMAX];
+char szKeyC[HB_STRINGMAX];
+int crgLexMax;
+char *pszTag;
+char *pchMMTS;
+char szResult[HB_LONGSTRINGMAX];
+char szTagAlt[HB_LONGSTRINGMAX];
+char szT[HB_STRINGMAX];
+int fEOT;
+int fTag1;
+
+  iRC = 0;
+                   /**/ /**** fprintf(stderr,
+                    "Create... lemma %s, tags: %s\n",pszLemma,pszMMTS); /**/
+  crgLexMax = *pcrglexMax;
+  if (crgLexMax >= HF_MAXNO_LEMMAS) {
+      fprintf(fLog,
+             "%s: HF_MAXNO_LEMMAS exceeded (%d); %s: no output!\n",
+                           szPN,HF_MAXNO_LEMMAS,pszLemma);
+    return 3992;
+  }
+  strcpy(szResult,pszLemma);
+  szResult[strlen(szResult)+1] = HB_EOS;
+  szResult[strlen(szResult)] = HF_PATSEP_CHAR;
+  strcat(szResult,"00unk000:unk000+");
+  iRC = MMt2DictAlt(pszMMTS,szTagAlt,HB_LONGSTRINGMAX-strlen(szResult)-5,1);
+  if (iRC != 0) {
+    return 3995;
+  }
+                   /**/ /**** fprintf(stderr,
+                    "aft MMt2DictAlt: tags %s\n",
+                             szTagAlt); /**/
+  strcat(szResult,szTagAlt);
+  if ((iRC = AddToIntStruct(szResult,szFormIn,
+                                      ppar,rgplex[crgLexMax])) > 0) {
+              /* hb_Free(rglex); */
+    fprintf(fLog,
+                 "%s: AddToIntStruct failed: %s not output!\n",
+                           szPN,szResult);
+    return iRC;
+  }
+  crgLexMax++;
+  (*pcResults)++;
+  if ((iRC = InsertSortLastLex(rgplex,&crgLexMax)) > 0) {
+             /* NB: crgLexMax is not changed inside for now */
+              /* hb_Free(rglex); */
+     fprintf(fLog,
+                 "%s: InsertSortLastLex failed at: %s\n",
+                           szPN,szResult);
+     return 5000+iRC;
+  }
+  *pcrglexMax = crgLexMax;
+  return iRC;
+} /* of CreateResultFromUnknown */
+
+FUNDEF5(int ProcessUnknown,
+parRecType *, ppar,
+int *, pcResults,
+char *, szFormIn,
+int *, pcrglexMax,
+lexRecType **, rgplex)
+{
+int iRC;
+char szKey[HB_STRINGMAX];
+char szKeyC[HB_STRINGMAX];
+int iPattern;
+int fCFL;
+char *pszMMTS;
+char szLemma[HB_LONGSTRINGMAX];
+char szMMTS[HB_LONGSTRINGMAX];
+int iDataLen;
+int iMMt;
+int cFormLen;
+int cSumLen;
+int cSuffStart;
+int cPrefLenMax;
+int iSuffBeg;
+int cSuffCurrLen;
+int iPrefixLen;
+int crgLexMax;
+char *pszTag;
+char *pchMMTS;
+char szResult[HB_LONGSTRINGMAX];
+char szT[HB_STRINGMAX];
+int fEOT;
+int fTag1;
+
+  iRC = 0;
+           /**/ /**** fprintf(stderr,
+                    "%s: processing unknown %s.\n",szPN,szFormIn); /**/
+  iRC = GetUnkBestMMTS(ppar,szFormIn,szLemma,HB_LONGSTRINGMAX-2,
+                                     szMMTS,HB_LONGSTRINGMAX-2);
+  if (iRC != 0) {
+    return 3991;
+  }
+                   /**/ /**** fprintf(stderr,
+                    "adding lemma %s, tags: %s\n",szLemma,szMMTS); /**/
+  iRC = CreateResultFromUnknown(ppar,pcResults,
+             szLemma,szMMTS,pcrglexMax,rgplex);
+  return iRC;
+} /* of ProcessUnknown */
+
+FUNDEF5(int GetLT,
+char *, szStr,
+char *, szLemma,
+int, cMaxLemma,
+char *, szMMTS,
+int, cMaxTags)
+{
+int iLemma;
+char *pchStr;
+  pchStr = szStr;
+  iLemma = 0;
+  while (*pchStr != HB_EOS && *pchStr != '<') {
+    if (iLemma < cMaxLemma) {
+      szLemma[iLemma++] = *pchStr;
+    }
+    else {
+      return 3975;
+    }
+    pchStr++;
+  } 
+  szLemma[iLemma] = HB_EOS;
+  /* now copy the tag(s): */
+  if (strlen(pchStr) < cMaxTags) {
+    strcpy(szMMTS,pchStr);
+  }
+  else {
+    return 3974;
+  }
+  return 0;
+} /* of GetLT */
+
+FUNDEF6(int ProcessUnknownLT,
+parRecType *, ppar,
+int *, pcResults,
+char *, szFormIn,
+char *, pszCheckLemma,
+int *, pcrglexMax,
+lexRecType **, rgplex)
+{
+int iRC;
+char szKey[HB_STRINGMAX];
+char szKeyC[HB_STRINGMAX];
+int iPattern;
+int fCFL;
+char *pszMMTS;
+char szLemma[HB_LONGSTRINGMAX];
+char szData[HB_LONGSTRINGMAX];
+char *pszData;
+char szMMTS[HB_LONGSTRINGMAX];
+int iDataLen;
+int iMMt;
+int cFormLen;
+int cSumLen;
+int cSuffStart;
+int cPrefLenMax;
+int iSuffBeg;
+int cSuffCurrLen;
+int iPrefixLen;
+int crgLexMax;
+char *pszTag;
+char *pchMMTS;
+char szResult[HB_LONGSTRINGMAX];
+char szPrevLemma[HB_LONGSTRINGMAX];
+char szTags[HB_LONGSTRINGMAX];
+char szT[HB_STRINGMAX];
+int fEOT;
+int fTag1;
+hb_listszRecType *plistszLT;
+hb_listszRecType *plistszNew;
+char szCopyIn[HB_LONGSTRINGMAX];
+char szCapitalized[HB_LONGSTRINGMAX];
+char szLower[HB_LONGSTRINGMAX];
+char *pszFormIn;
+char *rgCapVar[3];
+int crgCapVar; /* 1..3 */
+int iPass;
+int iCase; /* capitalization type of input form */
+
+  iRC = 0;
+           /**** /** fprintf(stderr,
+                    "%s: LT processing unknown %s.\n",szPN,szFormIn); /**/
+  plistszLT = NULL; /* empty list of lemma<MMt>tag strings */
+
+
+  strcpy(szCopyIn,szFormIn);
+  crgCapVar = 0;
+  rgCapVar[crgCapVar++] = szCopyIn;
+  iCase = hb_GetCase(szFormIn);
+  if (iCase == HB_UPPER && strlen(szFormIn) > 1) {
+    iRC = hb_ToCase(szCapitalized,szFormIn,HB_CAP);
+    if (iRC != 0) {
+      return 634;
+    }
+    rgCapVar[crgCapVar++] = szCapitalized;
+  }
+  if ((iCase == HB_CAP || iCase == HB_UPPER) && strlen(szFormIn) > 1) {
+    iRC = hb_ToCase(szLower,szFormIn,HB_LOWER);
+    if (iRC != 0) {
+      return 635;
+    }
+    rgCapVar[crgCapVar++] = szLower;
+  }
+
+  for (iPass = 0; iPass < crgCapVar; iPass++) {
+    pszFormIn = rgCapVar[iPass];
+    /* get [best] data only, no processing on them yet: */
+    iRC = GetUnkBestMMLTS(ppar,pszFormIn,szData,HB_LONGSTRINGMAX-2);
+    if (iRC != 0) {
+      return 3990;
+    }
+                   /**/ /**** fprintf(stderr,
+                    "adding data: %s\n",szData); /**/
+    pszData = szData;
+    while (*pszData != HB_EOS) {
+      iRC = GetUnkNext(ppar,&pszData,pszFormIn,
+                                   szLemma,HB_LONGSTRINGMAX-2,
+                                   szMMTS,HB_LONGSTRINGMAX-2);
+      /**/ /**** fprintf(stderr,
+             "GUN irc %d, form %s, lemma out %s, tag out %s, next data %s\n",
+             iRC, pszFormIn, szLemma, szMMTS, pszData); /**/
+      if (iRC > 0) {
+        return 3973;
+      }
+      if (iRC == 0) {
+        if (*pszCheckLemma == HB_EOS || /* do not check or... */
+            !strcmp(pszCheckLemma,szLemma)) { /* lemma o.k. (used for XX/ax) */
+          strcpy(szResult,szLemma);
+          strcat(szResult,szMMTS);
+          plistszNew = 
+            hb_listszSortInCopy(&plistszLT,szResult,HB_LISTSZ_ASC,1);
+          if (plistszNew == NULL) { /* some problem */
+            hb_listszFreeListCopy(plistszLT);
+           return 3986;
+          }
+        } /* of lemma check not requested or lemma equal to the input string */
+      } /* of "good" rule/tag found in current pszData */
+    } /* of while pszData not EOS (through GetUnkNext) */
+  } /* of for iPass until all capitalization variants checked */
+  if (plistszLT == NULL) {
+    /* simulate as if the usual "unknown" tag found: */
+    strcpy(szResult,"////");
+    strcat(szResult,"<MMt>");
+    strcat(szResult,"X"); /* will be converted to positional tag later */
+    plistszNew = hb_listszSortInCopy(&plistszLT,szResult,HB_LISTSZ_ASC,1);
+    /**/ /* 01/09/11: was: return 3972; /* fatal error: no rule/tag????? */
+  }
+
+  plistszNew = plistszLT;
+  strcpy(szPrevLemma,"");
+  strcpy(szTags,"");
+  while (plistszNew != NULL) {
+    iRC = GetLT(plistszNew->szStr,
+                  szLemma,HB_LONGSTRINGMAX-2,
+                  szMMTS,HB_LONGSTRINGMAX-2);
+    if (iRC != 0) {
+      hb_listszFreeListCopy(plistszLT);
+      return 3989;
+    }
+/**/ /**** fprintf(stderr,"got from GetLT: lemma %s, tags %s\n",
+                   szLemma,szMMTS); /**/
+    if (strcmp(szLemma,szPrevLemma) &&
+        strcmp(szPrevLemma,"")) { /* new lemma after some lemma */
+/**/ /**** fprintf(stderr,"CreateRes... lemma %s, tags %s\n",
+                   szPrevLemma,szTags); /**/
+      iRC = CreateResultFromUnknown(ppar,pcResults,
+              szPrevLemma,szTags,pcrglexMax,rgplex);
+      if (iRC != 0) {
+        hb_listszFreeListCopy(plistszLT);
+        return 3988;
+      }
+      strcpy(szTags,szMMTS);
+    }
+    else { /* same lemma */
+      if (strlen(szTags) + strlen(szMMTS) < HB_LONGSTRINGMAX - 2) {
+        strcat(szTags,szMMTS);
+      }
+      else { /* too short output string for tags */
+        hb_listszFreeListCopy(plistszLT);
+        return 3977;
+      }
+    }
+    strcpy(szPrevLemma,szLemma);
+    plistszNew = plistszNew->plistszNext;
+  }
+  if (strcmp(szPrevLemma,"")) { /* some lemma still waiting for output */
+/**/ /**** fprintf(stderr,"before final CreateRes... lemma %s, tags %s\n",
+                   szPrevLemma,szTags); /**/
+    iRC = CreateResultFromUnknown(ppar,pcResults,
+            szPrevLemma,szTags,pcrglexMax,rgplex);
+    if (iRC != 0) {
+/**/ /**** fprintf(stderr,"iRC from CreateRes...: %d\n",iRC); /**/
+      hb_listszFreeListCopy(plistszLT);
+      return 3976;
+    }
+  }
+  hb_listszFreeListCopy(plistszLT);
+  iRC = 0;
+  return iRC;
+} /* of ProcessUnknownLT */
+
+FUNDEF5(int ReplaceUnknownX,
+unsigned char *, pszLemmaIn,
+unsigned char *, pszLemmaOut,
+int, cMaxOut,
+unsigned char *, pszFormIn,
+parRecType *, ppar)
+{
+unsigned char *pch;
+char *pszOut;
+char *pchOut;
+char *pszTag;
+char *pszPat;
+int fDelTag;
+int i;
+char *pszPatternStart;
+char szTagIn[HB_STRINGMAX];
+char *pszTagIn;
+char *pchTagIn;
+char szLemma[HB_LONGSTRINGMAX];
+char szLemmaIn[HB_LONGSTRINGMAX];
+int iLemmaIn;
+char szMMTS[HB_LONGSTRINGMAX];
+char szTagAlt[HB_LONGSTRINGMAX];
+char szRest[HB_LONGSTRINGMAX];
+char szData[HB_LONGSTRINGMAX];
+char szTags[HB_LONGSTRINGMAX];
+char szResult[HB_LONGSTRINGMAX];
+char *pszData;
+hb_listszRecType *plistszLT;
+hb_listszRecType *plistszNew;
+
+   /**/ /**** fprintf(stderr,"ReplaceUnknownX called with %s\n",pszLemmaIn); /**/
+
+   strcpy(pszLemmaOut,pszLemmaIn);
+   if (strlen(pszFormIn) <= 1) { /* ignore single letter chars for now */
+     return 0;
+   }
+   pch = pszLemmaOut;
+   if (*pch == HB_EOS) {
+     return 2289;
+   }
+   iLemmaIn = 0;
+   while (*pch != HB_EOS) { /* ignore lemma */
+     if (*pch == HF_PATSEP_CHAR) {
+       break;
+     }
+     iRC = AddChar(szLemmaIn,*pch,&iLemmaIn,HB_LONGSTRINGMAX);
+     if (iRC != 0) { return 544; }
+     pch++;
+   } /* of while not EOS */
+   szLemmaIn[iLemmaIn] = HB_EOS;
+
+             /**/ /**** fprintf(stderr,"RUX szLemmaIn pure: %s\n",
+                    szLemmaIn); /**/
+
+   while (*pch != HB_EOS) {
+     pch++; /* skipping next-info-variant (HF_PATSEP_CHAR) char */
+     pszPatternStart = pch;
+     /* get (ign) ending segment length: */
+     if (*pch != HB_EOS) {
+       i = 10 * (*pch++ - '0');
+     }
+     if (*pch != HB_EOS) {
+       i += (*pch++ - '0');
+     }
+     /* now, get (ign) pattern info: */
+     while (*pch != HB_EOS && *pch != HF_PATSEP_CHAR) {
+       if (*pch == HF_TAG_SEP) {
+         break;
+       }       
+       pch++;
+     } /* of while not EOS/PATSEP */
+     if (*pch == HB_EOS || *pch == HF_PATSEP_CHAR) {
+       fprintf(stderr,
+       "%s: start-of-tag (\'%c\') not found in: %s\n",
+         szPN,HF_TAG_SEP,pszLemmaIn);
+       return 2202;
+     }
+
+     /* get tags: */
+     while (*pch == HF_TAG_SEP || *pch == HF_TAG_ALT) {
+       pch++; /* skip '+' or '/' */
+       pszTagIn = pch; /* in the copied, but 'old' string */
+       pchTagIn = szTagIn;
+                       /* tag default: do not delete */
+       while (*pch != HB_EOS &&
+              *pch != HF_PATSEP_CHAR &&
+              *pch != HF_EXPL_SPACE &&
+              *pch != HF_TAG_SEP &&
+              *pch != HF_TAG_ALT) {
+         *pchTagIn++ = *pch++;
+       } /* of getting one tag */
+       *pchTagIn = HB_EOS;
+     } /* of loop over tags */
+
+             /**/ /**** fprintf(stderr,"testing for X: %s\n",szTagIn); /**/
+
+     if (!strcmp(szTagIn,"X") || 
+         !strncmp(szTagIn,"XX",2)) { /* kinda hack; supposes all unifinished
+             dictionary entries are with compact tag X, or start with XX */
+             /* this ought to be parametrized in the future! */ 
+       /* unfinished dict. word; keep lemma but find tag(s): */
+       iRC = 0;
+           /**/ /**** fprintf(stderr,
+                    "%s: LTX processing unknown %s.\n",szPN,szFormIn); /**/
+           /* get [best] data only, no processing on them yet: */
+       iRC = GetUnkBestMMLTS(ppar,pszFormIn,szData,HB_LONGSTRINGMAX-2);
+       if (iRC != 0) {
+         return 545;
+       }
+                   /**/ /**** fprintf(stderr,
+                    " RUX adding data: %s\n",szData); /**/
+       pszData = szData;
+       plistszLT = NULL; /* empty list of lemma<MMt>tag strings */
+       while (*pszData != HB_EOS) {
+         iRC = GetUnkNext(ppar,&pszData,pszFormIn,
+                                   szLemma,HB_LONGSTRINGMAX-2,
+                                   szMMTS,HB_LONGSTRINGMAX-2);
+          /**/ /**** fprintf(stderr,
+           "UNX irc %d, form %s, lemma out %s, tag out %s, next data %s\n",
+           iRC, szFormIn, szLemma, szMMTS, pszData); /**/
+       if (iRC > 0) {
+         return 573;
+       }
+       if (iRC == 0) {
+         if (!strcmp(szLemmaIn,szLemma)) { 
+                          /* lemma o.k. (needed for XX/ax) */
+           strcpy(szResult,szLemma);
+           strcat(szResult,szMMTS);
+           plistszNew = hb_listszSortInCopy(&plistszLT,szResult,HB_LISTSZ_ASC,1);
+           if (plistszNew == NULL) { /* some problem */
+             hb_listszFreeListCopy(plistszLT);
+             return 586;
+           }
+         } /* of lemma check not requested or lemma equal to the input string */
+       } /* of "good" rule/tag found in current pszData */
+     }
+     if (plistszLT == NULL) {
+       /* simulate as if the usual "unknown" tag found: */
+       strcpy(szResult,"////");
+       strcat(szResult,"<MMt>");
+       strcat(szResult,"X"); /* will be converted to positional tag later */
+       plistszNew = hb_listszSortInCopy(&plistszLT,szResult,HB_LISTSZ_ASC,1);
+       /**/ /* 01/09/11: was: return 3972; /* fatal error: no rule/tag????? */
+     }
+
+     plistszNew = plistszLT;
+     strcpy(szTags,"");
+     while (plistszNew != NULL) {
+       iRC = GetLT(plistszNew->szStr,
+                  szLemma,HB_LONGSTRINGMAX-2,
+                  szMMTS,HB_LONGSTRINGMAX-2);
+       if (iRC != 0) {
+         hb_listszFreeListCopy(plistszLT);
+         return 589;
+       }
+       if (strlen(szTags) + strlen(szMMTS) < HB_LONGSTRINGMAX - 2) {
+         strcat(szTags,szMMTS);
+       }
+       else { /* too short output string for tags */
+         hb_listszFreeListCopy(plistszLT);
+         return 577;
+       }
+       plistszNew = plistszNew->plistszNext;
+     } /* of loop over listsz items */
+     hb_listszFreeListCopy(plistszLT); /* to claim back memory */
+
+                   /**/ /**** fprintf(stderr,
+                       "RUX calling mmt2dictalt: %s\n",szTags); /**/
+     iRC = MMt2DictAlt(szTags,szTagAlt,HB_LONGSTRINGMAX-5,0);
+     if (iRC != 0) {
+       return 595;
+     }
+     strcpy(szRest,pch); /* rest of string after original tag */
+     strcpy(pszPatternStart,"00unk00x:unk00x+");
+     strcat(pszPatternStart,szTagAlt); /* 'replace' old tag */
+     strcat(pszPatternStart,szRest); /* copy rest back (ie suppose semantic
+                style etc info ok */
+                   /**/ /**** fprintf(stderr,
+                       "returning from repunkx: %s\n",pszLemmaOut); /**/
+     return 0; /* return after first such tag, rest just copied
+                    (supposes here that one tag per pszLemmaIn, in fact) */
+     }
+     while (*pch != HB_EOS && *pch != HF_PATSEP_CHAR) {
+       pch++;
+     } /* of while not EOS/PATSEP */
+   } /* of while *pch == HF_PATSEP_CHAR, or not HB_EOS: loop over info parts */
+   /* if no X found, just returns whatever was originally 
+      copied to pszLemmaOut */
+   return 0;
+} /* of ReplaceUnknownX */
+
+int cMaxTags;
+char szMaxTags[1000];
+
+int
+lemmatize(ppar,dot,hyph,fAbbrIn,fNum,fPhDot,fForm,szLemmaIn)
+parRecType *ppar;
+int dot,hyph,fAbbrIn,fNum,fPhDot,fForm;
+char *szLemmaIn;
+{
+int fLemma;
+int cResults;
+char szT[2000]; /**/
+unsigned char *pszLemma;
+int iHFLemmaError;
+unsigned char szLemmaPrev[HF_MAXLEMMA];
+unsigned char szLemmaAct[HF_MAXLEMMA];
+unsigned char szTagAct[HF_MAXTAG];
+char szTag[HF_MAXTAG]; /* cannot be shorter than 30 -- see num/abbr */
+AmbClassRecType arT;
+int iAmbTag;
+int fLexOut;
+int fTagOut;
+char *pszOutput;
+lexRecType *rglex;
+lexRecType *rgplex[HF_MAXNO_LEMMAS]; /* ptrs to rglex[i], for sort & print */
+int crglexMax;
+int irglex;
+longint ilCache;
+int fCFL;
+char szDummy[4];
+int fCacheHit;
+int fBaseCacheHit;
+int iRC;
+unsigned char szFormCache[HF_MAXLEMMA];
+char szOutTag[HB_STRINGMAX];
+char *pszOutTag;
+char szLemmaOut[HB_LONGSTRINGMAX];
+#ifdef HF_UPDATE
+LemmaTagRecType ltIn;
+#endif
+
+  fLemma = (*szLemmaIn != HB_EOS);
+  rglex = (lexRecType *) hb_LongAlloc(sizeof(lexRecType)*HF_MAXNO_LEMMAS);
+  if (rglex == NULL) return 1099;
+  for (irglex = 0; irglex < HF_MAXNO_LEMMAS; irglex++) {
+    rgplex[irglex] = &(rglex[irglex]);
+  }
+  crglexMax = 0;
+
+#ifdef HF_UPDATE
+  if (fLemma) {
+    if (ParseLemmaTag(&ltIn,szLemmaIn) != 0) {
+      return 1088;
+    }
+  }
+#endif
+
+  fprintf(yyout,"%s",szFormIn);
+  if (fPhDot) {
+    fprintf(yyout,".");
+  }
+  if (fForm) {
+    strcpy(szFormCache,"-1-");
+  }
+  else {
+    strcpy(szFormCache,"-0-");
+  }
+  strcat(szFormCache,szFormIn);
+  if (dot) 
+    strcat(szFormCache,"-1");
+  else
+    strcat(szFormCache,"-0");
+  if (hyph) 
+    strcat(szFormCache,"-1");
+  else
+    strcat(szFormCache,"-0");
+
+  /* from now on, will do different things if cache used */
+  fCacheHit = 0;
+  fBaseCacheHit = 0;
+  if (!fLemma && *(ppar->szBaseCache) != HB_EOS) {
+    /* base cache used: */
+    ppar->clCacheQueries++;
+    if (!hb_HashFindFirst(ppar->phashBaseCache,
+            szFormCache,szMorph,HF_MAXRESULT-2,&ilCache,&fCFL)) {
+      /* found in cache */
+      /* ilCache ignored */
+      ppar->clBaseCacheHits++;
+      pszOutput = szMorph;
+      fBaseCacheHit = 1;
+    }
+  }
+  if (!fLemma && !fBaseCacheHit && ppar->clCacheEntries > 0) { /* cache used */
+    if (*(ppar->szBaseCache) == HB_EOS) {
+      ppar->clCacheQueries++; 
+         /* increase only if not increased in BaseCache search */  
+    }
+    if (!hb_HashFindFirst(ppar->phashCache,
+            szFormCache,szDummy,2,&ilCache,&fCFL)) {
+      /* found in cache */
+      ppar->clCacheHits++;
+      fCacheHit = 1;
+      pszOutput = ppar->rgszCachedResults[ilCache];
+      /**/ /* fprintf(stderr,
+              "Got from cache: %s/%s\n",szFormCache,pszOutput); /**/
+    } /* of cache hit */
+  } /* of cache used & test if hit */
+
+
+  if (!fCacheHit && !fBaseCacheHit) { /* must work */
+
+    /* check parameters: */
+    if (!fLemma) { /* no lemma in input */
+      if (ppar->fLemmaTagUpdate &&
+          ppar->fReportLTU) {
+        fprintf(fLog,"%s: update requested, but no lemma in input: %s\n",
+          szPN,szFormIn);
+      }
+    }
+    strcpy(szMorph,"");
+    arT.cTags = 0;
+    arT.iTagFree = 0;
+  
+    if ((iHFLemmaError = hf_LemmaRawFlags(&(ppar->langEnvDic),
+                                    szFormIn,dot,hyph,&cResults)) != 0) {
+      fprintf(stderr,"%s: error in hf_LemmaRawFlags (%d)\n",
+      szPN,iHFLemmaError);
+      hb_Free(rglex);
+      return 102;
+    }
+    if (cResults > cMaxTags) {
+      cMaxTags = cResults;
+      strcpy(szMaxTags,szFormIn);
+    }
+   
+    /**/ /*** fprintf(stderr,"%s/%d%d: %d\n",szFormIn,dot,hyph,cResults); /**/
+    if (cResults) { /* at least one result there */
+  
+      while ((pszLemma = hf_get_res()) != NULL) {
+        /**/ /**** fprintf(stderr,
+                "pszLemma from hf_get_res(): %s\n",pszLemma); /**/
+        if (crglexMax >= HF_MAXNO_LEMMAS) {
+          fprintf(fLog,
+            "%s: HF_MAXNO_LEMMAS exceeded (%d); %s not output!\n",
+                         szPN,HF_MAXNO_LEMMAS,pszLemma);
+          continue;
+        }
+        /* process dictionary deficiencies: (X tags) */
+        if (ppar->punk != NULL) { /* processing unknown requested */
+          if ((iRC = ReplaceUnknownX(pszLemma,szLemmaOut,HB_LONGSTRINGMAX-2,
+                       szFormIn,ppar)) > 0) {
+            hb_Free(rglex);
+            return iRC;
+          }
+          pszLemma = szLemmaOut;
+        } /* of processing unknown */
+        if ((iRC = AddToIntStruct(pszLemma,szFormIn,
+                                  ppar,rgplex[crglexMax])) > 0) {
+          hb_Free(rglex);
+          return iRC;
+        }
+        crglexMax++;
+        if ((iRC = InsertSortLastLex(rgplex,&crglexMax)) > 0) {
+            /* NB: crglexMax is not changed inside for now */
+          hb_Free(rglex);
+          return 5000+iRC;
+        }
+      } /* of while getting all results... */
+    }
+    else { /* no real result, try numbers etc. */
+      if (fAbbrIn) {
+        if (fprintf(fNF,"%s\n",szFormIn) == 0) {
+          fprintf(stderr,"%s: cannot write to not_found_file\n",
+            szPN);
+          hb_Free(rglex);
+          return(1081);
+        }
+        strcpy(szTag,"00zkrin:zkrin+NFXXA_N_B");
+        cResults = 1;
+      }
+      else if (fNum) {
+        strcpy(szTag,"00num000:num000+ZNUM_M");
+        cResults = 1;
+      }
+      else if (fForm == 0) {
+        strcpy(szTag,"00punct000:punct000+ZIP_");
+        cResults = 1;
+      }
+      if (cResults) {
+        strcpy(szT,szFormIn);
+        szT[strlen(szT)+1] = HB_EOS;
+        szT[strlen(szT)] = HF_PATSEP_CHAR;
+        strcat(szT,szTag);
+        pszLemma = szT;
+        if ((iRC = AddToIntStruct(pszLemma,szFormIn,
+                                  ppar,rgplex[crglexMax])) > 0) {
+          /**** fprintf(stderr,"%s: cannot add szFormIn: %s\n",szPN,szFormIn); /**/
+          hb_Free(rglex);
+          return 7000+iRC;
+        }
+        crglexMax++;
+        if ((iRC = InsertSortLastLex(rgplex,&crglexMax)) > 0) {
+            /* NB: crglexMax is not changed inside for now */
+          /**** fprintf(stderr,"%s: cannot InsertSort... szFormIn: %s\n",szPN,szFormIn); /**/
+          hb_Free(rglex);
+          return 6000+iRC;
+        }
+      }
+    } /* no real result initially */
+
+    if (cResults == 0) { /* 2001.06.11 handling unknown word before the 
+                            NOMORPH stuff possibly kicks in */
+           /* 2001.06.08 hajic */
+      if (ppar->punk != NULL) {
+        iRC = ProcessUnknownLT(ppar,&cResults,szFormIn,"",&crglexMax,rgplex);
+        if (iRC != 0) {
+/**** fprintf(stderr,"%s: ProcessUnknownLT failed: szFormIn %s\n",szPN,szFormIn); /**/
+          return (40000 + iRC); /* fatal error in ProcessUnknown */
+        }
+      } /* of unknown word handling present */
+    } /* of cResults == 0 after abbr/num/ other input flags -- unknown word */
+
+    if (cResults) { /* real result or number or abbr etc. */
+      /* now all results in rglex, structured;
+         ignore what should be ignored, and print the rest: */
+      if (MarkForDeletion(rgplex,crglexMax,ppar) > 0) {
+        hb_Free(rglex);
+        return 1097; /* fatal */
+      }
+      if (SetOutFlags(rgplex,crglexMax,&fLexOut,&fTagOut) == 1) {
+        /* ok, something left after deletions */
+        if (MergeLex(rgplex,crglexMax,fLexOut,fTagOut) > 0) {
+          hb_Free(rglex);
+          return 1096;
+        }
+        if (!fLemma) {
+          if (ppar->fAllTags) {
+            if (MakeAmbRec(&arT,rgplex,crglexMax,fLexOut,fTagOut,1) > 0) {
+              hb_Free(rglex);
+              return 1095;
+            }
+          }
+          if (ppar->fForceLemmaUpdate) {
+            if (ppar->fReportLTU) {
+               /* already reported (no lemma in input) */
+               /* fprintf(fLog,
+                  "%s: update requested (forced): lemma not found: %s\n",
+                    szPN,szFormIn); */
+            }
+            if (PrintLex(rgplex,crglexMax,fLexOut,fTagOut,
+                              -1,szMorph+strlen(szMorph)) > 0) {
+              hb_Free(rglex);
+              return 1070;
+            }
+          }
+          if ((iRC = PrintLex(rgplex,crglexMax,fLexOut,fTagOut,1,
+                             szMorph+strlen(szMorph))) > 0) {
+            fprintf(stderr,"%s: cannot PrintLex: %s (%d)\n",szPN,szMorph,iRC);
+            hb_Free(rglex);
+            return 1098;
+          }
+        }
+        else { /* lemma or other tags present in input */
+#ifdef HF_UPDATE
+          if ((iRC = MarkDisambiguated(&ltIn,
+                                rgplex,crglexMax,fLexOut,fTagOut,ppar)) > 0) {
+            hb_Free(rglex);
+            return 1094;
+          }
+          if (ppar->fLemmaTagUpdate) {
+            if (ppar->fAllTags) {
+              if (MakeAmbRec(&arT,rgplex,crglexMax,fLexOut,fTagOut,
+                             (iRC < 0)) > 0) {
+                hb_Free(rglex);
+                return 1093;
+              }
+            }
+            /* print with lemma/tag "updated": */
+            if (iRC < 0 && (!(ppar->fForceLemmaUpdate))) {
+                 /* not found in input, not forced update, print input+mark */
+              if (ppar->fReportLTU) {
+                fprintf(fLog,"%s: update requested / lemma mismatch: %s\n",
+                         szPN,szFormIn);
+              }
+              if (PrintInputLT(szMorph+strlen(szMorph),&ltIn,ppar,LTMARKNF)
+                  > 0) {
+                hb_Free(rglex);
+                return 1085;
+              }
+            }
+            else { /* print updated lemma + tag 
+                      (either found in MMl or forced) */
+              if (iRC < 0 && ppar->fForceLemmaUpdate) {
+                if (ppar->fReportLTU) {
+                  fprintf(fLog,
+             "%s: update requested (forced): lemma and/or tag mismatch: %s\n",
+                    szPN,szFormIn);
+                }
+              }
+              if (PrintLex(rgplex,crglexMax,fLexOut,fTagOut,
+                               0,szMorph+strlen(szMorph)) > 0) {
+                hb_Free(rglex);
+                return 1069;
+              }
+            }
+            if (ppar->fMDCopy) {
+              if (PrintInputMDLT(szMorph+strlen(szMorph),&ltIn,ppar,"") > 0) {
+                hb_Free(rglex);
+                return 1086;
+              }
+            }
+            if (PrintLex(rgplex,crglexMax,fLexOut,fTagOut,
+                               1,  /* print "normal" (MMl/MMt) output */
+                               szMorph+strlen(szMorph)) > 0) {
+              hb_Free(rglex);
+              return 1092;
+            }
+          }
+          else { /* update request not specified in program parameters */
+            if (ppar->fAllTags) { /* always generate new Ct taglist */
+              if (MakeAmbRec(&arT,rgplex,crglexMax,fLexOut,fTagOut,
+                             (iRC < 0)) > 0) {
+                hb_Free(rglex);
+                return 1091;
+              }
+            }
+            if (PrintInputLT(szMorph+strlen(szMorph),&ltIn,ppar,"") > 0) {
+              hb_Free(rglex);
+              return 1090;
+            }
+            if (ppar->fMDCopy) {
+	              if (PrintInputMDLT(szMorph+strlen(szMorph),&ltIn,ppar,"") > 0) {
+                hb_Free(rglex);
+                return 1089;
+              }
+            }
+            if (PrintLex(rgplex,crglexMax,fLexOut,fTagOut,
+                               1,  /* print "normal" (MMl/MMt) output */
+                               szMorph+strlen(szMorph)) > 0) {
+              hb_Free(rglex);
+              return 1087;
+            }
+          }
+#else
+          strcpy(szMorph+strlen(szMorph),szLemmaIn);
+#endif
+        }
+      }
+      else { /* SetOutFlags 0 */
+        /* nothing actually printed */
+        cResults = 0; /* force results to zero, to add NOMORPH etc. in
+                         the next block */
+      }
+    } /* of cResults not 0 */
+  
+    /* cResults may be set to 0 also if all results ignored based on params */
+    if (cResults == 0) { /* no morphology result */
+      if ((*szFormIn != HB_EOS && *(szFormIn+1) != HB_EOS)) {
+        /* at least two chars */
+        if (fprintf(fNF,"%s\n",szFormIn) == 0) {
+          fprintf(stderr,"%s: cannot write to not_found_file\n",
+            szPN);
+          hb_Free(rglex);
+          return(101);
+        }
+        strcpy(szTag,MPHOUT_NMATAG);
+      }
+      else { /* one char only -- do not write to not found file */
+        strcpy(szTag,MPHOUT_NMATAG1);
+      }
+      if ((iRC = MakeAmbClass(&arT,szTag)) > 0) {
+        hb_Free(rglex);
+        return 3000+iRC;
+      }
+      if (!fLemma) {
+        if (ppar->fLemmaTagUpdate) {
+          if (ppar->fForceLemmaUpdate) {
+            if (ppar->fReportLTU) {
+              fprintf(fLog,
+              "%s: update requested (forced), no lemma in, no morph out: %s\n",
+                         szPN,szFormIn);
+            }
+            sprintf(szMorph+strlen(szMorph),"%s%s",
+              MPHINOUT_LB,szFormIn);
+            pszOutTag = szTag;
+            if ((iRC = ConvertTag(ppar,szOutTag,pszOutTag)) == 0) {
+              pszOutTag = szOutTag;
+            }
+            else if (iRC > 0) { /* error -- tag not found */
+              fprintf(stderr,"%s: tag %s not found at %s\n",
+                           szPN,pszOutTag,szMorph);
+              return(1067);
+            }
+            /* else table not used (-1), or tag already converted (-2) */
+            sprintf(szMorph+strlen(szMorph),"%s%s%s",
+              MPHINOUT_TAG,pszOutTag,MPHINOUT_RB);
+          } /* of forced update for NOMORPH */
+        }
+        sprintf(szMorph+strlen(szMorph),"%s%s",
+          MPHOUT_LB,szFormIn);
+        if (ppar->fRoot) {
+          sprintf(szMorph+strlen(szMorph),"%s%s",
+            MPHOUT_SEG_ROOT,szFormIn);
+        }
+        if (ppar->fEnding) {
+          sprintf(szMorph+strlen(szMorph),"%s%s",
+            MPHOUT_SEG_END,"0");
+        }
+        pszOutTag = szTag;
+        if ((iRC = ConvertTag(ppar,szOutTag,pszOutTag)) == 0) {
+          pszOutTag = szOutTag;
+        }
+        else if (iRC > 0) { /* error -- tag not found */
+          fprintf(stderr,"%s: tag %s not found at %s\n",
+                       szPN,pszOutTag,szMorph);
+          return(1080);
+        }
+        /* else table not used (-1), or tag already converted (-2) */
+        sprintf(szMorph+strlen(szMorph),"%s%s%s",
+          MPHOUT_TAG,pszOutTag,MPHOUT_RB);
+      }
+      else { /* lemma present in input */
+#ifdef HF_UPDATE
+        if (ppar->fLemmaTagUpdate) {
+          if (ppar->fForceLemmaUpdate) {
+            if (ppar->fReportLTU) {
+              fprintf(fLog,"%s: update requested (forced)/ no morph out: %s\n",
+                         szPN,szFormIn);
+            }
+            sprintf(szMorph+strlen(szMorph),"%s%s",
+              MPHINOUT_LB,szFormIn);
+            pszOutTag = szTag;
+            if ((iRC = ConvertTag(ppar,szOutTag,pszOutTag)) == 0) {
+              pszOutTag = szOutTag;
+            }
+            else if (iRC > 0) { /* error -- tag not found */
+              fprintf(stderr,"%s: tag %s not found at %s\n",
+                           szPN,pszOutTag,szMorph);
+              return(1080);
+            }
+            /* else table not used (-1), or tag already converted (-2) */
+            sprintf(szMorph+strlen(szMorph),"%s%s%s",
+              MPHINOUT_TAG,pszOutTag,MPHINOUT_RB);
+          } /* of forced update */
+          else {
+            if (ppar->fReportLTU) {
+              fprintf(fLog,"%s: update requested / no morph out: %s\n",
+                         szPN,szFormIn);
+            }
+            if (PrintInputLT(szMorph+strlen(szMorph),&ltIn,ppar,LTMARKNF)
+                > 0) {
+              hb_Free(rglex);
+              return 1084;
+            }
+          }
+        } /* of update requested */
+        else { /* update NOT requested */
+          if (PrintInputLT(szMorph+strlen(szMorph),&ltIn,ppar,"")
+              > 0) {
+            hb_Free(rglex);
+            return 1083;
+          }
+        }
+        if (ppar->fMDCopy) {
+          if (PrintInputMDLT(szMorph+strlen(szMorph),&ltIn,ppar,"") > 0) {
+            hb_Free(rglex);
+            return 1082;
+          }
+        }
+        sprintf(szMorph+strlen(szMorph),"%s%s",
+          MPHOUT_LB,szFormIn);
+        if (ppar->fRoot) {
+          sprintf(szMorph+strlen(szMorph),"%s%s",
+            MPHOUT_SEG_ROOT,szFormIn);
+        }
+        if (ppar->fEnding) {
+          sprintf(szMorph+strlen(szMorph),"%s%s",
+            MPHOUT_SEG_END,"0");
+        }
+        pszOutTag = szTag;
+        if ((iRC = ConvertTag(ppar,szOutTag,pszOutTag)) == 0) {
+          pszOutTag = szOutTag;
+        }
+        else if (iRC > 0) { /* error -- tag not found */
+          fprintf(stderr,"%s: tag %s not found at %s\n",
+                       szPN,pszOutTag,szMorph);
+          return(1079);
+        }
+        /* else table not used (-1), or tag already converted (-2) */
+        sprintf(szMorph+strlen(szMorph),"%s%s%s",
+          MPHOUT_TAG,pszOutTag,MPHOUT_RB);
+#else
+        strcpy(szMorph+strlen(szMorph),szLemmaIn);
+#endif
+      }
+    } /* of cResults 0 */
+  
+    pszOutput = szMorph;
+  
+    if (ppar->fAllTags) {
+      strcpy(szAmb,AMBCLASSTAG);
+      for (iAmbTag = 0; iAmbTag < arT.cTags; iAmbTag++) {
+        pszOutTag = arT.rgTags[iAmbTag];
+        if ((iRC = ConvertTag(ppar,szOutTag,pszOutTag)) == 0) {
+          pszOutTag = szOutTag;
+        }
+        else if (iRC > 0) { /* error -- tag not found */
+          fprintf(stderr,"%s: tag %s not found at %s\n",
+                       szPN,pszOutTag,szMorph);
+          return(1078);
+        }
+        /* else table not used (-1), or tag already converted (-2) */
+        strcat(szAmb,pszOutTag);
+        strcat(szAmb,TAGELEMEND);
+      }
+      strcat(szAmb,szMorph);
+      pszOutput = szAmb;
+    }
+    /* now the whole output string is pointed to by pszOutput */
+    if (strlen(pszOutput) > HF_MAXRESULT-100) {
+      fprintf(stderr,"oops... length szMorph\n");
+      exit(1111);
+    }
+
+    /* now we know there was no hit, but if cache is used, add to cache: */
+    if (!fLemma && ppar->clCacheEntries > 0) { /* cache used */
+      if (ppar->ilCachedResultFree >= ppar->clCacheEntries) {
+        /* must replace LRU item in cache */
+        /******/ /* simply ignored for now */
+      } /* of replacing LRU item in cache */
+      else {
+        /* just add it: */
+        if ((ppar->rgszCachedResults[ppar->ilCachedResultFree] = (char *)
+           hb_LongAlloc(sizeof(char)*strlen(pszOutput)+2)) == NULL) {
+          fprintf(fLog,"%s: cannot add data %s(%s) to cache\n",szPN,
+                     pszOutput,szFormCache);
+        }
+        else {
+          strcpy(ppar->rgszCachedResults[ppar->ilCachedResultFree],
+                  pszOutput);
+          if (hb_HashAdd(ppar->phashCache,szFormCache,
+                         ppar->ilCachedResultFree,"") > 0) {
+            fprintf(fLog,"%s: cannot add string %s to cache\n",
+                           szPN,szFormCache);
+          }
+          else { /* ok, string added */
+            /* ok, just move free ptr: */
+            ppar->ilCachedResultFree++;
+          }
+        }
+      } /* of simply adding new result -- cache not yet full */
+    } /* of cache used: add result to cache */
+  } /* of not (any) cache hit */
+  
+  if (!fLemma && fCacheHit) { /* move hit to top of hit list */
+    /* strategy: exchange top & current word; insert to top
+       might work better, but it'd need move of rgszCachedResults or
+       linked list structure! */
+    /* pszOuput set to cached result string */
+    /* ilCache is its index: */
+    /* this code is fast but not very robust to changes -- be careful what's
+       going on with pszOutput above!! */
+    /**/ /* not yet -- must add Replace hash proc */
+    /**/ /* ppar->rgszCachedResults[ilCache] = ppar->rgszCachedResults[0];
+    ppar->rgszCachedResults[0] = pszOutput;
+    */ /**/
+  }
+
+#ifdef HF_UPDATE
+  if (fLemma &&
+      *(ltIn.szCopyOnly) != HB_EOS) {
+    strcat(pszOutput,ltIn.szCopyOnly);
+  }
+#endif
+
+  fprintf(yyout,"%s",pszOutput);
+
+  hb_Free(rglex);
+  return 0;
+} /* of lemmatize */
+
+int fAbbr;
+int fNum;
+int fPhDot;
+int fAn;
+
+char szLemma[LTSTRINGMAX];
+int fMarkup;
+
+int fForm; /* to distinguish <f>/<d> input */
+
+%}
+
+%x ANALYZE
+%x FOLLOW
+
+WS [ \t\n]
+WSS {WS}*
+WS1 {WS}+
+FT (([PREArgt])|("MMl")|("MMt")|("MDg")|("MDA")|("MDl")|("MDt")|("Ct")|("l"))
+EOTN (([ \t\n]+[^>]*)?">")
+DTAG ("<d"({WS1}[^>]*)?">")
+FTAG ("<f"({WS1}[^>]*)?">")
+
+%%
+"<markup>"|"</h>" {
+     if (!fMarkup) {
+       fprintf(yyout,"<markup>\n");
+       fprintf(yyout,"<mauth>Jan Hajic\n");
+       tTime = time(NULL);
+       fprintf(yyout,"<mdate>%s",ctime(&tTime));
+       fprintf(yyout,
+         "<mdesc>Morphology; parameters: %s=%d, %s=%d, %s=%d, %s=%d, %s=%d\n",
+         "RootOut",pparMain->fRoot,"EndOut",pparMain->fEnding,
+         "AllTags",pparMain->fAllTags,
+         "LemmaTagUpdate",pparMain->fLemmaTagUpdate,
+         "ForceLemmaUpdate",pparMain->fForceLemmaUpdate);
+       fprintf(yyout,
+         "<mdesc>Morphology; parameters, set 2: %s=%d\n",
+         "MDCopy",pparMain->fMDCopy);
+       fprintf(yyout,"<mdesc>MA: syn/sem/sty: ");
+       fprintf(yyout,"%s%s/",pparMain->szSyntSep,pparMain->szSyntOut);
+       fprintf(yyout,"%s%s/",pparMain->szSemSep,pparMain->szSemOut);
+       fprintf(yyout,"%s%s/",pparMain->szStyleSep,pparMain->szStyleOut);
+       fprintf(yyout,"\n<mdesc>MA: output: desc: %s",pparMain->szDescSep);
+       if (pparMain->fDescOut)
+         fprintf(yyout,"Yes, "); 
+       else
+         fprintf(yyout,"No, "); 
+       fprintf(yyout,"la:%s/",pparMain->szLexDelAlways);
+       fprintf(yyout,"lc:%s, ",pparMain->szLexDelIfExtra);
+       fprintf(yyout,"va:%s/",pparMain->szVarDelAlways);
+       fprintf(yyout,"vc:%s;\n",pparMain->szVarDelIfExtra);
+       fprintf(yyout,"</markup>\n");
+       fMarkup = 1;
+     }
+     ECHO;
+  }     
+"<f"{WS1}([.a-zA-Z]+".")?"num"[^>]*">"{WSS} { ECHO; 
+                  fForm = 1;
+                  fPhDot = 0;
+                  fAbbr = 0;
+                  fNum = 1;
+                  *szLemma = HB_EOS;
+                  BEGIN(ANALYZE); }
+"<f"{WS1}([.a-zA-Z]+".")?"abbr"[^>]*">"{WSS} { ECHO; 
+                  fForm = 1;
+                  fPhDot = 0;
+                  fAbbr = 1;
+                  fNum = 0;
+                  *szLemma = HB_EOS;
+                  BEGIN(ANALYZE); }
+{FTAG}{WSS} { ECHO; 
+                  fForm = 1;
+                  fPhDot = 0;
+                  fNum = 0;
+                  fAbbr = 0;
+                  *szLemma = HB_EOS;
+                  BEGIN(ANALYZE); }
+{DTAG}{WSS} { ECHO; 
+                  fForm = 0;
+                  fPhDot = 0;
+                  fNum = 0;
+                  fAbbr = 0;
+                  *szLemma = HB_EOS;
+                  BEGIN(ANALYZE); }
+. ECHO;
+\n ECHO;
+<ANALYZE>(([^\n<]*[^ \t\n<.])|((".")+)) { 
+      strcpy(szLemma,"");
+      strcpy(szFormIn,yytext); 
+   /**/ /* fprintf(stderr,"st: <%s>, szTC: %s;\n",szFormIn,szTC);
+     if (strcmp(szTC,pparMain->szStyleOut))
+       fprintf(stderr,"VOILA!!!!!!!!!!!: %s, %s;\n",szTC,pparMain->szStyleOut);
+   /**/
+      BEGIN(FOLLOW); }
+<ANALYZE>. { fprintf(stderr,
+      "%s: empty <f>/<d> tag starting: \'%s\'\n",szPN,yytext);
+      return(10);
+    }
+<ANALYZE>\n { fprintf(stderr,
+      "%s: empty <f>/<d> tag at end of line\n",szPN);
+      return(10);
+    }
+<FOLLOW>{WSS}"<"{FT}{EOTN}.* {
+      strcpy(szT,yytext);
+      pch = szT;
+      while (*pch != '<') {
+        pch++; /* ignore WSS */
+      }
+      strcpy(szLemma,pch);
+    }
+<FOLLOW>{WSS}([.]{WSS})+"<"{FT}{EOTN}.* {
+      strcpy(szT,yytext);
+      pch = szT;
+      while (*pch != '<') {
+        pch++; /* ignore WSS */
+      }
+      strcpy(szLemma,pch);
+      fPhDot = 1;
+      if ((iRC = lemmatize(pparMain,1,0,fAbbr,fNum,fPhDot,fForm,szLemma)) > 0) 
+        return iRC;
+      /* fprintf(yyout, "%s", szLemma); */
+      BEGIN(INITIAL);
+    }
+<FOLLOW>{WSS}([.]{WSS})+ {
+      strcpy(szT,yytext);
+      fPhDot = 1;
+      *szLemma = HB_EOS;
+      if ((iRC = lemmatize(pparMain,1,0,fAbbr,fNum,fPhDot,fForm,szLemma)) > 0) 
+        return iRC;
+      pch = szT;
+      while (*pch != '\0') {
+        if (*pch != '.') fprintf(yyout,"%c",*pch);
+        pch++;
+      }
+      BEGIN(INITIAL);
+    }
+<FOLLOW>{WSS}"<D>"{WSS}/{DTAG}{WSS}[.]{WSS} {
+      if ((iRC =
+        lemmatize(pparMain,1,0,fAbbr,fNum,fPhDot,fForm,szLemma)) > 0) return iRC;
+      /* fprintf(yyout, "%s", szLemma); */
+      ECHO;
+      BEGIN(INITIAL);
+    }
+<FOLLOW>{WSS}"<D>"{WSS}/{DTAG}{WSS}"-"{WSS} {
+      if ((iRC =
+        lemmatize(pparMain,0,1,fAbbr,fNum,fPhDot,fForm,szLemma)) > 0) 
+        return iRC;
+      /* fprintf(yyout, "%s", szLemma); */
+      ECHO;
+      BEGIN(INITIAL);
+    }
+<FOLLOW>{WSS}\n {
+      if ((iRC =
+        lemmatize(pparMain,0,0,fAbbr,fNum,fPhDot,fForm,szLemma)) > 0) 
+        return iRC;
+      /* fprintf(yyout, "%s", szLemma); */
+      ECHO;
+      BEGIN(INITIAL);
+    }
+<FOLLOW>{WSS}"<" { 
+      if ((iRC =
+        lemmatize(pparMain,0,0,fAbbr,fNum,fPhDot,fForm,szLemma)) > 0) 
+        return iRC;
+      /* fprintf(yyout, "%s", szLemma); */
+      yyless(0);
+      BEGIN(INITIAL);
+    }
+<FOLLOW>. { fprintf(stderr,
+      "%s: internal error: in <FOLLOW> state.\n",
+        szPN);
+      return(11);
+    }
+%%
+
+
+main(argc, argv)
+int argc;
+char *argv[];
+{
+int iHFError;
+longint il;
+longint l1,l2,lHR;
+longint lCE;
+char szKeyC[HB_STRINGMAX];
+char szKey[HB_STRINGMAX];
+char szData[HB_LONGSTRINGMAX];
+int iPattern;
+int fCFL;
+int iT;
+
+  strcpy(szPN,argv[0]);
+  iRC = 0;
+  if (argc <= 1) {
+    fprintf(stderr,
+      "%s: usage: %s <argfile> < <input> > <output>\n",szPN,szPN);
+    exit(1);
+  }
+  if (hb_ArgOpen(argv[1]) > 0) {
+    fprintf(stderr,
+      "%s: ArgOpen on %s failed\n",szPN,argv[1]);
+    exit(1);
+  }
+
+  if (hb_ArgGetValue(argv[1],LOGFILENAME,szLogName,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,LOGFILENAME);
+    exit(203);
+  }
+  
+  if (NULL == (pparMain = (parRecType *) hb_LongAlloc(sizeof(parRecType)))) {
+    fprintf(stderr,
+      "%s: Cannot allocate memory for parameter record\n",szPN);
+    exit(204);
+  } 
+
+  if (hb_ArgGetValue(argv[1],DICTIONARY,szDictionary,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,DICTIONARY);
+    exit(2);
+  }
+  if (hb_ArgGetValue(argv[1],NFFILENAME,szNFName,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,NFFILENAME);
+    exit(298);
+  }
+
+  /* not yet used; if ever... 27.03.1998 */
+  /*
+  if (hb_ArgGetValue(argv[1],XFFILENAME,pparmain->szXFFile,HB_STRINGMAX-2)
+       > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,XFFILENAME);
+    exit(297);
+  }
+  */
+  if (hb_ArgGetValue(argv[1],CHARSET,
+                             pparMain->szCharSet,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,CHARSET);
+    exit(221);
+  }
+  /* 2001.06.13 fill table right here: */
+  if (hhSetTabFillInv(pparMain->szCharSet) != 0) {
+    fprintf(stderr,"%s: cannot init code table (code %s)\n",
+           pparMain->szCharSet);
+    exit(377);
+  }
+
+  if (hb_ArgGetValue(argv[1],VARDELALWAYS,
+                             pparMain->szVarDelAlways,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,VARDELALWAYS);
+    exit(201);
+  }
+
+  if (hb_ArgGetValue(argv[1],VARDELIFEXTRA,
+                             pparMain->szVarDelIfExtra,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,VARDELIFEXTRA);
+    exit(202);
+  }
+
+  if (hb_ArgGetValue(argv[1],LEXDELALWAYS,
+                             pparMain->szLexDelAlways,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,LEXDELALWAYS);
+    exit(212);
+  }
+
+  if (hb_ArgGetValue(argv[1],LEXDELIFEXTRA,
+                             pparMain->szLexDelIfExtra,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,LEXDELIFEXTRA);
+    exit(213);
+  }
+
+  if (hb_ArgGetValue(argv[1],ARGLEMMATAGUPDATE,szT,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,"%s: GetValue %s failed\n",szPN,ARGLEMMATAGUPDATE); 
+    exit(218); }
+  pparMain->fLemmaTagUpdate = 0;
+  if (!strcmp(szT,"y") || !strcmp(szT,"Y") || !strcmp(szT,"yes") || 
+      !strcmp(szT,"Yes") || !strcmp(szT,"YES")) { 
+    pparMain->fLemmaTagUpdate = 1; }
+  else { pparMain->fLemmaTagUpdate = atoi(szT); }
+
+  if (hb_ArgGetValue(argv[1],ARGFORCELEMMAUPDATE,szT,HB_STRINGMAX-2) > 0) {
+    if (pparMain->fLemmaTagUpdate) {
+      fprintf(stderr,"%s: GetValue %s failed\n",szPN,ARGFORCELEMMAUPDATE); 
+      exit(222);
+    }
+    else {
+      strcpy(szT,"n");
+    }
+  }
+  pparMain->fForceLemmaUpdate = 0;
+  if (!strcmp(szT,"y") || !strcmp(szT,"Y") || !strcmp(szT,"yes") || 
+      !strcmp(szT,"Yes") || !strcmp(szT,"YES")) { 
+    pparMain->fForceLemmaUpdate = 1; }
+  else { pparMain->fForceLemmaUpdate = atoi(szT); }
+
+  if (hb_ArgGetValue(argv[1],ARGMDCOPY,szT,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,"%s: GetValue %s failed\n",szPN,ARGMDCOPY); 
+    exit(219); }
+  pparMain->fMDCopy = 0;
+  if (!strcmp(szT,"y") || !strcmp(szT,"Y") || !strcmp(szT,"yes") || 
+      !strcmp(szT,"Yes") || !strcmp(szT,"YES")) { 
+    pparMain->fMDCopy = 1; }
+  else { pparMain->fMDCopy = atoi(szT); }
+
+  if (hb_ArgGetValue(argv[1],ARGREPORTLTU,szT,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,"%s: GetValue %s failed\n",szPN,ARGREPORTLTU); 
+    exit(220); }
+  pparMain->fReportLTU = 0;
+  if (!strcmp(szT,"y") || !strcmp(szT,"Y") || !strcmp(szT,"yes") || 
+      !strcmp(szT,"Yes") || !strcmp(szT,"YES")) { 
+    pparMain->fReportLTU = 1; }
+  else { pparMain->fReportLTU = atoi(szT); }
+
+  if (hb_ArgGetValue(argv[1],ARGALLTAGS,szT,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,"%s: GetValue %s failed\n",szPN,ARGALLTAGS); exit(217); }
+  pparMain->fAllTags = 0;
+  if (!strcmp(szT,"y") || !strcmp(szT,"Y") || !strcmp(szT,"yes") || 
+      !strcmp(szT,"Yes") || !strcmp(szT,"YES")) { pparMain->fAllTags = 1; }
+  else { pparMain->fAllTags = atoi(szT); }
+
+  if (hb_ArgGetValue(argv[1],ARGROOT,szT,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,"%s: GetValue %s failed\n",szPN,ARGROOT); exit(215); }
+  pparMain->fRoot = 0;
+  if (!strcmp(szT,"y") || !strcmp(szT,"Y") || !strcmp(szT,"yes") || 
+      !strcmp(szT,"Yes") || !strcmp(szT,"YES")) { pparMain->fRoot = 1; }
+  else { pparMain->fRoot = atoi(szT); }
+
+  if (hb_ArgGetValue(argv[1],ARGEND,szT,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,"%s: GetValue %s failed\n",szPN,ARGEND); exit(216); }
+  pparMain->fEnding = 0;
+  if (!strcmp(szT,"y") || !strcmp(szT,"Y") || !strcmp(szT,"yes") || 
+      !strcmp(szT,"Yes") || !strcmp(szT,"YES")) { pparMain->fEnding = 1; }
+  else { pparMain->fEnding = atoi(szT); }
+
+  if (hb_ArgGetValue(argv[1],DESCOUT,pparMain->szDescOut,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,DESCOUT);
+    exit(205);
+  }
+  pparMain->fDescOut = 0;
+  if (!strcmp(pparMain->szDescOut,"y") || !strcmp(pparMain->szDescOut,"Y") ||
+      !strcmp(pparMain->szDescOut,"yes") || 
+      !strcmp(pparMain->szDescOut,"Yes") ||
+      !strcmp(pparMain->szDescOut,"YES")) {
+    pparMain->fDescOut = 1;
+  }
+  else {
+    pparMain->fDescOut = atoi(pparMain->szDescOut);
+  }
+  if (hb_ArgGetValue(argv[1],DESCSEP,pparMain->szDescSep,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,DESCSEP);
+    exit(207);
+  }
+
+  if (hb_ArgGetValue(argv[1],PATTERNSOUT,pparMain->szPatternsOut,
+                                         HB_STRINGMAX-2) > 0) {
+    /* fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,PATTERNSOUT);
+    exit(245); */ /* default: no patterns out */
+    strcpy(pparMain->szPatternsOut,"NO");
+  }
+  pparMain->fPatternsOut = 0;
+  if (!strcmp(pparMain->szPatternsOut,"y") || 
+      !strcmp(pparMain->szPatternsOut,"Y") ||
+      !strcmp(pparMain->szPatternsOut,"yes") || 
+      !strcmp(pparMain->szPatternsOut,"Yes") ||
+      !strcmp(pparMain->szPatternsOut,"YES")) {
+    pparMain->fPatternsOut = 1;
+  }
+  else {
+    pparMain->fPatternsOut = atoi(pparMain->szPatternsOut);
+  }
+
+  if (hb_ArgGetValue(argv[1],SYNTOUT,pparMain->szSyntOut,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,SYNTOUT);
+    exit(206);
+  }
+  if (hb_ArgGetValue(argv[1],SYNTSEP,pparMain->szSyntSep,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,SYNTSEP);
+    exit(207);
+  }
+  if (hb_ArgGetValue(argv[1],SEMOUT,pparMain->szSemOut,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,SEMOUT);
+    exit(208);
+  }
+  if (hb_ArgGetValue(argv[1],SEMSEP,pparMain->szSemSep,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,SEMSEP);
+    exit(209);
+  }
+  if (hb_ArgGetValue(argv[1],STYLEOUT,
+                               pparMain->szStyleOut,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,STYLEOUT);
+    exit(210);
+  }
+  if (hb_ArgGetValue(argv[1],STYLESEP,
+                               pparMain->szStyleSep,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,STYLESEP);
+    exit(211);
+  }
+  if (hb_ArgGetValue(argv[1],CACHEENTRIES,
+                               pparMain->szCacheEntries,HB_STRINGMAX-2) > 0) {
+    fprintf(stderr,
+      "%s: GetValue %s failed\n",szPN,CACHEENTRIES);
+    exit(214);
+  }
+  pparMain->clCacheEntries = atoi(pparMain->szCacheEntries);
+  if (hb_ArgGetValue(argv[1],BASECACHE,
+                               pparMain->szBaseCache,HB_STRINGMAX-2) > 0) {
+    *(pparMain->szBaseCache) = HB_EOS;
+    /* base cache not used */
+  }
+  pparMain->punk = NULL; /* will stay if no unknown data file present */
+  if (hb_ArgGetValue(argv[1],UNKNOWNRULES,
+                               szT,HB_STRINGMAX-2) == 0) {
+    /* parameter found */
+    pparMain->punk = (unkRecType *) hb_LongAlloc(sizeof(unkRecType));
+    if (pparMain->punk == NULL) {
+      fprintf(stderr,"%s: cannot allocate space for unk record\n",szPN);
+      exit(235);
+    }
+    pparMain->punk->pcpdUnk = hb_CpdOpen(szT);
+    if (pparMain->punk->pcpdUnk == NULL) {
+      fprintf(stderr,"%s: cannot open unknown word rules file %s\n",
+           szPN,szT);
+      exit(234);
+    }
+    /* read basic parameters here: */
+
+    strcpy(szKey,"^PREFMAX^");
+    hb_CpdCvs(szKey,szKeyC);
+    if (hb_CpdFindFirst(pparMain->punk->pcpdUnk,szKeyC,
+        szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
+      fprintf(stderr,
+       "%s: error in hb_CpdFindFirst(%s), key = %s\n",
+       szPN,pparMain->punk->pcpdUnk->szFileName,szKey);
+      exit(236);
+    }
+    pparMain->punk->cPrefMax = atoi(szData);
+    /**/ /* fprintf(stderr,"PREFMAX: %s (%d)\n",szData,
+           pparMain->punk->cPrefMax); /**/
+    strcpy(szKey,"^SUFFMAX^");
+    hb_CpdCvs(szKey,szKeyC);
+    if (hb_CpdFindFirst(pparMain->punk->pcpdUnk,szKeyC,
+        szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
+      fprintf(stderr,
+       "%s: error in hb_CpdFindFirst(%s), key = %s\n",
+       szPN,pparMain->punk->pcpdUnk->szFileName,szKey);
+      exit(238);
+    }
+    pparMain->punk->cSuffMax = atoi(szData);
+/**/ /**** fprintf(stderr,"sufmax data sz: %s\n",szData); /**/
+    /**/ /* fprintf(stderr,"SUFFMAX: %s (%d)\n",szData,
+                pparMain->punk->cSuffMax); /**/
+
+    strcpy(szKey,"^LF^");
+    hb_CpdCvs(szKey,szKeyC);
+    if (hb_CpdFindFirst(pparMain->punk->pcpdUnk,szKeyC,
+        szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
+      fprintf(stderr,
+       "%s: error in hb_CpdFindFirst(%s), key = %s\n",
+       szPN,pparMain->punk->pcpdUnk->szFileName,szKey);
+      exit(232);
+    }
+    strcpy(pparMain->punk->szLF,szData);
+    /**/ /* fprintf(stderr,"LF rule: %s (%d)\n",pparMain->punk->szLF); /**/
+
+    strcpy(szKey,"^^0");
+    hb_CpdCvs(szKey,szKeyC);
+    if (hb_CpdFindFirst(pparMain->punk->pcpdUnk,szKeyC,
+        szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
+      fprintf(stderr,
+       "%s: error in hb_CpdFindFirst(%s), key = %s\n",
+       szPN,pparMain->punk->pcpdUnk->szFileName,szKey);
+      exit(237);
+    }
+    pparMain->punk->cMMt = atoi(szData) + 1;
+    /**/ /* fprintf(stderr,"MMt table size: %s (+1: %d)\n",
+                            szData,pparMain->punk->cMMt); /**/ 
+    il = pparMain->punk->cMMt;
+    pparMain->punk->rgszMMt = (char **) hb_LongAlloc(sizeof(char *)*il);
+    if (pparMain->punk->rgszMMt == NULL) {
+      fprintf(stderr,
+       "%s: error cannot allocate memory (%ld items) for MMt table.\n",
+       szPN,il);
+      exit(241);
+    }
+    for (iT = 0; iT < pparMain->punk->cMMt; iT++) {
+      pparMain->punk->rgszMMt[iT] = NULL; /* initialize to NULL only; loaded
+                                             on demand */
+    }
+
+    strcpy(szKey,"^^^0");
+    hb_CpdCvs(szKey,szKeyC);
+    if (hb_CpdFindFirst(pparMain->punk->pcpdUnk,szKeyC,
+        szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
+      fprintf(stderr,
+       "%s: error in hb_CpdFindFirst(%s), key = %s\n",
+       szPN,pparMain->punk->pcpdUnk->szFileName,szKey);
+      exit(249);
+    }
+    pparMain->punk->cLRT = atoi(szData) + 1;
+    /**/ /* fprintf(stderr,"LRT table size: %s (+1: %d)\n",
+                            szData,pparMain->punk->cLRT); /**/ 
+    il = pparMain->punk->cLRT;
+    pparMain->punk->rgszLRT = (char **) hb_LongAlloc(sizeof(char *)*il);
+    if (pparMain->punk->rgszLRT == NULL) {
+      fprintf(stderr,
+       "%s: error cannot allocate memory (%ld items) for LRT table.\n",
+       szPN,il);
+      exit(248);
+    }
+    for (iT = 0; iT < pparMain->punk->cLRT; iT++) {
+      pparMain->punk->rgszLRT[iT] = NULL; /* initialize to NULL only; loaded
+                                             on demand */
+    }
+  }
+  else {
+    /* else do nothing! just print warning */ 
+    fprintf(stderr,
+      "%s: Warning: GetValue %s failed\n",szPN,UNKNOWNRULES);
+  }
+    
+
+  /* end of parameter reading from arg file */
+
+  if ((fNF = fopen(szNFName,"wt")) == NULL) {
+    fprintf(stderr,
+      "%s: cannot open not_found_file %s\n",szPN,szNFName);
+    exit(3);
+  }
+
+  /* not yet used; if ever... */
+  /*
+  if ((fXF = fopen(pparMain->szXFFile,"wt")) == NULL) {
+    fprintf(stderr,
+      "%s: cannot open x-tagged file %s\n",szPN,szXFFile);
+    exit(3);
+  }
+  */
+
+  if ((fLog = fopen(szLogName,"at")) == NULL) {
+    fprintf(stderr,
+      "%s: cannot open log file in append mode: %s\n",szPN,szLogName);
+    exit(301);
+  }
+
+  pparMain->phashTagTable = NULL;
+  pparMain->phashInvTagTable = NULL;
+  *(pparMain->szTagTable) = HB_EOS;
+  if (hb_ArgGetValue(argv[1],TAGTABLE,pparMain->szTagTable,HB_STRINGMAX-2)
+       > 0) {
+    if (pparMain->fLemmaTagUpdate ||
+        pparMain->fForceLemmaUpdate) {
+      fprintf(fLog,
+        "%s: %s MUST be used when lemma update requested.\n",szPN,
+                 TAGTABLE);
+      fprintf(stderr,
+        "%s: %s MUST be used when lemma update requested.\n",szPN,
+                 TAGTABLE);
+      exit(339);
+    }
+    else {
+      fprintf(fLog,
+        "%s: No tag table used.\n",szPN);
+      *(pparMain->szTagTable) = HB_EOS;
+    }
+  }
+  else {
+    if (hb_HashFileIn(&(pparMain->phashTagTable),pparMain->szTagTable,0)
+              > 0) {
+      fprintf(fLog,"%s: cannot init tag hash table %s\n",
+                     szPN,pparMain->szTagTable);
+      exit(303);
+    }
+    if (hb_HashFileIn(&(pparMain->phashInvTagTable),pparMain->szTagTable,1)
+              > 0) {
+      fprintf(fLog,"%s: cannot init inverted tag hash table %s\n",
+                     szPN,pparMain->szTagTable);
+      exit(304);
+    }
+  }
+
+  /* initialize CACHE here: */
+  if (*(pparMain->szBaseCache) == HB_EOS) {
+    fprintf(fLog,"%s: base cache not used.\n",szPN);
+  }
+  else {
+    if (hb_HashFileIn(&(pparMain->phashBaseCache),pparMain->szBaseCache,0)
+              > 0) {
+      fprintf(fLog,"%s: cannot init base cache hash table %s\n",
+                     szPN,pparMain->szBaseCache);
+      exit(302);
+    }
+  } /* base cache used */
+  if (pparMain->clCacheEntries <= 0l) {
+    pparMain->clCacheEntries = 0l;
+  }
+  else {
+    pparMain->clCacheQueries = 0l;
+    pparMain->clCacheHits = 0l;
+    pparMain->clBaseCacheHits = 0l;
+    pparMain->rgszCachedResults = 
+          (char **) hb_LongAlloc(sizeof(char *) * pparMain->clCacheEntries);
+    if (pparMain->rgszCachedResults == NULL) {
+      fprintf(fLog,
+           "%s: cannot allocate cached results ptr array: %ld bytes.\n",
+           szPN,pparMain->clCacheEntries);
+      pparMain->clCacheEntries = 0l;
+    }
+    for (il = 0; il < pparMain->clCacheEntries; il++) 
+      pparMain->rgszCachedResults[il] = NULL;
+    pparMain->ilCachedResultFree = 0l;
+    lCE = pparMain->clCacheEntries;
+    lCE += (lCE / 4);
+    pparMain->phashCache = hb_HashNew(lCE,
+                               lCE*48,20);
+                               /* only index of rgszCachedresults stored */
+    if (pparMain->phashCache == NULL) {
+      fprintf(fLog,
+        "%s: cannot allocate hash table for cache: %ld entries/%ld bytes.\n",
+        szPN,lCE,lCE*48);
+      pparMain->clCacheEntries = 0l;
+    }
+  }
+  if (pparMain->clCacheEntries <= 0l) {
+    fprintf(fLog,"%s: internal cache not used.\n",szPN);
+  }
+  else {
+    fprintf(fLog,"%s: internal cache initialized: %ld entries\n",szPN,
+                      pparMain->clCacheEntries);
+  }
+  /* end of cache initialization */
+
+  if ((iHFError = hf_init(szDictionary,pparMain->szCharSet)) != 0) {
+    fprintf(stderr,
+      "%s: initialization of %s (codepage %s) failed (%d)\n",szPN,szDictionary,
+           pparMain->szCharSet,iHFError);
+    exit(1000+iHFError);
+  }
+
+  hb_SetLangEnv(&(pparMain->langEnvDic),szLangDict);
+
+/**** fprintf(stderr,"***************    LANG from dict : %s **********\n", 
+       szLangDict); /**/
+
+  cMaxTags = 0;
+  yyout = stdout;
+
+  fMarkup =0;
+
+/**/ /* fprintf(stderr,"szStyleOut2 = %s;\n",pparMain->szStyleOut); /**/
+
+  iRC = yylex();
+
+  if (iRC != 0) {
+    fprintf(stderr,
+      "%s: return code from yylex: %d\n",szPN,iRC);
+  }
+
+  if (pparMain->clCacheEntries > 0) { /* cache used */
+    fprintf(fLog,
+     "%s: base cache hits: %ld, internal %ld, cache queries: %ld\n",szPN,
+           pparMain->clBaseCacheHits,pparMain->clCacheHits,
+           pparMain->clCacheQueries);
+    l1 = pparMain->clBaseCacheHits + pparMain->clCacheHits + 500;
+    l2 = pparMain->clCacheQueries / 1000;
+    if (l2 >= 1) {
+      lHR = l1 / l2;
+      fprintf(fLog,"%s: total cache hits per 1000 queries: %ld\n",szPN,lHR);
+    }
+  } /* of cache usage statistics */
+
+  hf_end();
+
+
+
+  /**/ /* free all cached result strings here */
+  hb_Free(pparMain->rgszCachedResults);
+
+  /* fprintf(stderr,
+    "%s: max. no. of results for an input word: %d, \"%s\"\n",
+    szPN,cMaxTags,szMaxTags); */
+
+  return(iRC);
+}
