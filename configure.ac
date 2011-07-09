@@ -33,9 +33,9 @@ AC_HEADER_STDC
 # Misc
 dnl Check for debug options
 if test "x$use_debug" = "xyes"; then
-	CXXFLAGS="$CXXFLAGS -ggdb -O0 -Wall"
+	CFLAGS="$CFLAGS -ggdb -O0 -Wall"
 else
-	CXXFLAGS="$CXXFLAGS -DNDEBUG"
+	CFLAGS="$CFLAGS -DNDEBUG"
 fi
 
 dnl set PREFIX in config.h

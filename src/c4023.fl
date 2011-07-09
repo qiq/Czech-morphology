@@ -3810,6 +3810,8 @@ hb_listszRecType *plistszNew;
 int cMaxTags;
 char szMaxTags[1000];
 
+char *pszOutput;
+
 int
 lemmatize(ppar,dot,hyph,fAbbrIn,fNum,fPhDot,fForm,szLemmaIn)
 parRecType *ppar;
@@ -3829,7 +3831,7 @@ AmbClassRecType arT;
 int iAmbTag;
 int fLexOut;
 int fTagOut;
-char *pszOutput;
+//char *pszOutput;
 lexRecType *rglex;
 lexRecType *rgplex[HF_MAXNO_LEMMAS]; /* ptrs to rglex[i], for sort & print */
 int crglexMax;
@@ -3864,10 +3866,10 @@ LemmaTagRecType ltIn;
   }
 #endif
 
-  fprintf(yyout,"%s",szFormIn);
-  if (fPhDot) {
-    fprintf(yyout,".");
-  }
+//  fprintf(yyout,"%s",szFormIn);
+//  if (fPhDot) {
+//    fprintf(yyout,".");
+//  }
   if (fForm) {
     strcpy(szFormCache,"-1-");
   }
@@ -4382,7 +4384,7 @@ LemmaTagRecType ltIn;
   }
 #endif
 
-  fprintf(yyout,"%s",pszOutput);
+//  fprintf(yyout,"%s",pszOutput);
 
   hb_Free(rglex);
   return 0;

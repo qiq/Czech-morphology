@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include "hb_base.h"
 #include "hb_hash.h"
 #include "hb_cpd.h"
@@ -82,14 +83,21 @@ typedef struct parRec {
 } parRecType;
 
 extern parRecType *pparMain;
-extern char *szLogName;
-extern char *szDictionary;
-extern char *szNFName;
+extern char szLogName[];
+extern char szDictionary[];
+extern char szNFName[];
 extern FILE *fNF;
 extern FILE *fLog;
+extern char szFormIn[];
+extern char *pszOutput;
+
+pthread_mutex_t mutex;
 
 // not thread safe
 int lemmatize_init(const char *dictionary, const char *unknown_rules, const char *tag_table) {
+
+	pthread_mutex_init(&mutex, NULL);
+
 	*szLogName = '\0';
 
 	if (NULL == (pparMain = (parRecType *) hb_LongAlloc(sizeof(parRecType)))) {
@@ -245,6 +253,7 @@ int lemmatize_init(const char *dictionary, const char *unknown_rules, const char
 			return 339;
 		*(pparMain->szTagTable) = HB_EOS;
 	} else {
+		strcpy(pparMain->szTagTable, tag_table);
 		if (hb_HashFileIn(&(pparMain->phashTagTable),pparMain->szTagTable,0) > 0) {
 			// fprintf(fLog,"%s: cannot init tag hash table %s\n", szPN,pparMain->szTagTable);
 			return 303;
@@ -302,14 +311,51 @@ int lemmatize_init(const char *dictionary, const char *unknown_rules, const char
 void lemmatize_destroy() {
 	hf_end();
 	hb_Free(pparMain->rgszCachedResults);
+	pthread_mutex_destroy(&mutex);
 }
 
+int lemmatize(parRecType *ppar, int dot, int hyph, int fAbbrIn, int fNum, int fPhDot, int fForm, char *szLemmaIn);
+
 // thread safe
-const char *lemmatize_token(const char *token, int punct, int dot, int hyphen, int abbr, int number, int phdot) {
+char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_number, int dot_follows, int hyphen_follows) {
+	int contain_hyphen = 0;
+	int last_dot = 0;
+
+	if (strchr(token, '-'))
+		contain_hyphen = 1;
+	if (*token && token[strlen(token)-1] == '.')
+		last_dot = 1;
+
+	pthread_mutex_lock(&mutex);
 	//int lemmatize(ppar,dot,hyph,fAbbrIn,fNum,fPhDot,fForm,szLemmaIn)
-	char result[10*1024];
-	int rc = lemmatize(pparMain, dot, hyphen, abbr, number, phdot, !punct, token, result);
-	if (rc != 0)
-		return NULL;
-	// process CSTS output format
+	strncpy(szFormIn, token, HB_STRINGMAX-2);
+	char *lemma = "";
+	int rc = lemmatize(pparMain, dot_follows, hyphen_follows, is_abbr, is_number, last_dot, !is_punct, lemma);
+	char *result = NULL;
+	if (rc == 0) {
+		int first = 1;
+		result = strdup(pszOutput);
+		char *r = result;
+		char *p = result;
+		while (*p) {
+			if (*p == '<') {
+				if (!strncmp(p, "<MMl", 4)) {
+					if (first)
+						first = 0;
+					else
+						*r++ = '\t';
+				} else if (!strncmp(p, "<MMt", 4)) {
+					*r++ = ' ';
+				}
+				while (*p != '>')
+					p++;
+				p++;
+			} else {
+				*r++ = *p++;
+			}
+		}
+		*r = '\0';
+	}
+	pthread_mutex_unlock(&mutex);
+	return result;
 }
