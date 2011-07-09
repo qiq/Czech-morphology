@@ -3,9 +3,9 @@ exec_prefix=@exec_prefix@
 libdir=@libdir@
 includedir=@includedir@
 
-Name: czmorph
+Name: czmorphology
 Description: Czech morphology (by Jan Hajic) library.
 Requires: 
 Version: @VERSION@
-Libs: -L${libdir} -lczmorph
+Libs: -L${libdir} -lczmorphology
 Cflags: -I${includedir}

@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.61)
-AC_INIT(czmorph, 0.0.1-dev, qiq@ucw.cz)
+AC_INIT(czmorphology, 0.0.1-dev, qiq@ucw.cz)
 AC_CONFIG_AUX_DIR(config)
 AC_CONFIG_SRCDIR([config.h.in])
 AM_CONFIG_HEADER([config.h])
@@ -49,6 +49,6 @@ AC_CONFIG_FILES([Makefile
                 src/Makefile
 		data/Makefile
 		test/Makefile
-		czmorph.pc
+		czmorphology.pc
 ])
 AC_OUTPUT

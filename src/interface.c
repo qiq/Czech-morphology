@@ -94,7 +94,7 @@ extern char *pszOutput;
 pthread_mutex_t mutex;
 
 // not thread safe
-int lemmatize_init(const char *dictionary, const char *unknown_rules, const char *tag_table) {
+int lemmatize_init(const char *dictionary, const char *tag_table, const char *unknown_rules) {
 
 	pthread_mutex_init(&mutex, NULL);
 
@@ -242,8 +242,8 @@ int lemmatize_init(const char *dictionary, const char *unknown_rules, const char
 		}
 	}
 
-	fNF = NULL;
-	fLog = NULL;
+	fNF = fopen("/dev/null", "w");
+	fLog = fopen("/dev/null", "w");
 
 	pparMain->phashTagTable = NULL;
 	pparMain->phashInvTagTable = NULL;

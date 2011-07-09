@@ -2,10 +2,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include "czmorph/interface.h"
+#include "czmorphology/interface.h"
 
-int main() {
-	int result = lemmatize_init("../data/CZ100404a", "../data/CZ100404au.cpd", "../data/CZ100404ag.txt");
+int main(int argc, char *argv[]) {
+	if (argc != 2) {
+		fprintf(stderr, "usage: test <data_prefix>\n");
+		exit(1);
+	}
+	char prefix[1024*10];
+	char tagtable[1024*10];
+	char unknown[1024*10];
+	snprintf(prefix, sizeof(prefix), "%s", argv[1]);
+	snprintf(tagtable, sizeof(tagtable), "%sg.txt", argv[1]);
+	snprintf(unknown, sizeof(unknown), "%su.cpd", argv[1]);
+	int result = lemmatize_init(prefix, tagtable, unknown);
 	if (result != 0) {
 		fprintf(stderr, "error: %d\n", result);
 		exit(1);

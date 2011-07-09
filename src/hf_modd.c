@@ -2087,7 +2087,7 @@ int iVersion;
     return(20);
   }
   if ((hf_dx_index = (Longint *)
-                     alloc(4*(hf_dxx+4))) == NULL) {
+                     alloc(sizeof(Longint*)*(hf_dxx+4))) == NULL) {
     hf_err("aldx");
     return(20);
   }
@@ -2342,7 +2342,7 @@ int iVersion;
     return(20);
   }
   if ((hf_ex_index = (Longint *)
-                     alloc(4*(hf_exx+4))) == NULL) {
+                     alloc(sizeof(Longint*)*(hf_exx+4))) == NULL) {
     hf_err("alex");
     return(20);
   }
@@ -2357,7 +2357,7 @@ int iVersion;
     return(20);
   }
   if ((hf_elist = (Char **)
-                     alloc(4*(hf_ekeymax+2))) == NULL) {
+                     alloc(sizeof(Char**)*(hf_ekeymax+2))) == NULL) {
     hf_err("alls");
     return(20);
   }
