@@ -9,13 +9,7 @@ int main(int argc, char *argv[]) {
 		fprintf(stderr, "usage: test <data_prefix>\n");
 		exit(1);
 	}
-	char prefix[1024*10];
-	char tagtable[1024*10];
-	char unknown[1024*10];
-	snprintf(prefix, sizeof(prefix), "%s", argv[1]);
-	snprintf(tagtable, sizeof(tagtable), "%sg.txt", argv[1]);
-	snprintf(unknown, sizeof(unknown), "%su.cpd", argv[1]);
-	int result = lemmatize_init(prefix, tagtable, unknown);
+	int result = lemmatize_init(argv[1], 1);
 	if (result != 0) {
 		fprintf(stderr, "error: %d\n", result);
 		exit(1);

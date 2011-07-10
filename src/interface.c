@@ -97,7 +97,17 @@ extern char *pszOutput;
 pthread_mutex_t mutex;
 
 // not thread safe
-int lemmatize_init(const char *dictionary, const char *tag_table, const char *unknown_rules) {
+int lemmatize_init(const char *prefix, int guess) {
+	char *dictionary = prefix;
+	char *tag_table = malloc(strlen(prefix)+5+1);
+	strcpy(tag_table, prefix);
+	strcat(tag_table, "g.txt");
+	char *unknown_rules = NULL;
+	if (guess) {
+		unknown_rules = malloc(strlen(prefix)+5+1);
+		strcpy(unknown_rules, prefix);
+		strcat(unknown_rules, "u.cpd");
+	}
 
 	pthread_mutex_init(&mutex, NULL);
 
@@ -306,6 +316,9 @@ int lemmatize_init(const char *dictionary, const char *tag_table, const char *un
 	}
 
 	hb_SetLangEnv(&(pparMain->langEnvDic),szLangDict);
+
+	free(tag_table);
+	free(unknown_rules);
 
 	return 0;
 }

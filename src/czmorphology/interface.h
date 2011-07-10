@@ -3,14 +3,12 @@
 
 /**
   Initialize lemmatizer library. This method is not thread-safe.
-  @dictionary	Path to dictionary (prefix), e.g. CZ100404a. Two files are
-		required: *e.cpd *w.cpd.
-  @tag_table	Path to tag table file, e.g. CZ100404ag.txt
-  @unknown	Path to the unknown words (guesser) rules, e.g.
-		CZ100404au.cpd. Specify NULL to disable guesser.
+  @prefix	Path to dictionary (prefix), e.g. CZ100404a. Three files are required:
+		${prefix}e.cpd, ${prefix}w.cpd and ${prefix}g.txt.
+  @guess	Run guesser for unknown words, ${prefix}u.cpd is required.
   @return	Result is 0 or error code.
 */
-int lemmatize_init(const char *dictionary, const char *tag_table, const char *unknown);
+int lemmatize_init(const char *prefix, int guess);
 
 /**
   Lemmatize one token, you have to specify several attributes. This method is
