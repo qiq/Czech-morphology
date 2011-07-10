@@ -1,5 +1,4 @@
-AM_CFLAGS = -Wall -DHF_UPDATE -O0 -ggdb -DLONG_IS_64 -D__alpha -I $(top_srcdir)/src/czmorphology
-AM_LDFLAGS = -ggdb
+AM_CFLAGS = -Wall -DHF_UPDATE -DLONG_IS_64 -D__alpha -I $(top_srcdir)/src/czmorphology
 
 lib_LTLIBRARIES = libczmorphology.la
 

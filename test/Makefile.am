@@ -1,5 +1,4 @@
-AM_CFLAGS = -Wall -DHF_UPDATE -O0 -ggdb -I $(top_srcdir)/src
-AM_LDFLAGS = -ggdb
+AM_CFLAGS = -Wall -DHF_UPDATE -I $(top_srcdir)/src
 
 TESTS = czm_test.sh
 EXTRA_DIST = czm_test.sh czm_test.in czm_test.out
