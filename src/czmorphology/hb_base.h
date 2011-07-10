@@ -203,9 +203,9 @@ PROTO(hb_listszRecType *hb_listszFreeListCopy, (hb_listszRecType *));
 PROTO(hb_listszRecType *hb_listszPush, (hb_listszRecType *,
               hb_listszRecType *));
 PROTO(hb_listszRecType *hb_listszInList, (hb_listszRecType *, char *));
-PROTO(hb_listszRecType *hb_listszSortIn, (hb_listszRecType **, char *,
-                                          int, int));
 PROTO(hb_listszRecType *hb_listszSortInCopy, (hb_listszRecType **, char *,
+                                          int, int));
+PROTO(hb_listszRecType *hb_listszSortInCopy_disabled, (hb_listszRecType **, char *,
                                           int, int));
 
 PROTO(hb_llszRecType *hb_llszNew, (hb_listszRecType *));

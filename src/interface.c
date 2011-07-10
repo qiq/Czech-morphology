@@ -82,6 +82,9 @@ typedef struct parRec {
   tlangEnvRec langEnvDic; /* language env. of dictionary, incl. prefixes */
 } parRecType;
 
+extern hb_listszRecType *hb_listszFreeHead;
+extern hb_llszRecType *hb_llszFreeHead;
+
 extern parRecType *pparMain;
 extern char szLogName[];
 extern char szDictionary[];
@@ -309,8 +312,44 @@ int lemmatize_init(const char *dictionary, const char *tag_table, const char *un
 
 // not thread safe
 void lemmatize_destroy() {
+	int i;
 	hf_end();
+
+	/* unknown words (guesser) shutdown */
+	if (pparMain->punk) {
+		hb_CpdClose(pparMain->punk->pcpdUnk);
+
+		for (i = 0; i < pparMain->punk->cLRT; i++)
+			hb_Free(pparMain->punk->rgszLRT[i]);
+		hb_Free(pparMain->punk->rgszLRT);
+
+		for (i = 0; i < pparMain->punk->cMMt; i++)
+			hb_Free(pparMain->punk->rgszMMt[i]);
+		hb_Free(pparMain->punk->rgszMMt);
+
+		hb_Free(pparMain->punk);
+	}
+
+	/* hb_base free: we cannot use hb_listszFreeList() as it does not
+	 * really free items, just put them in a cache */
+	while (hb_listszFreeHead) {
+		hb_listszRecType *tf = hb_listszFreeHead;
+		hb_listszFreeHead = hb_listszFreeHead->plistszNext;
+		hb_Free(tf);
+	}
+
+	/* generic shutdown */
+	for (i = 0; i < pparMain->ilCachedResultFree; i++)
+		hb_Free(pparMain->rgszCachedResults[i]);
 	hb_Free(pparMain->rgszCachedResults);
+	hb_HashFree(&pparMain->phashCache);
+	hb_HashFree(&pparMain->phashTagTable);
+	hb_HashFree(&pparMain->phashInvTagTable);
+	hb_Free(pparMain);
+
+	fclose(fNF);
+	fclose(fLog);
+
 	pthread_mutex_destroy(&mutex);
 }
 

@@ -207,7 +207,7 @@ hb_listszRecType *plistszAct;
 } /* of hb_listszInList */
 
 FUNDEF4(hb_listszRecType *
-hb_listszSortIn,
+hb_listszSortInCopy,
 hb_listszRecType **, pplistszHead,
 char *, pszIn,
 int, fOrder,
@@ -265,7 +265,7 @@ int fCmp;
 } /* of hb_listszSortIn */
 
 FUNDEF4(hb_listszRecType *
-hb_listszSortInCopy,
+hb_listszSortInCopy_disabled,
 hb_listszRecType **, pplistszHead,
 char *, pszIn,
 int, fOrder,
@@ -283,7 +283,7 @@ char *szStrCopy;
     return NULL;
   }
   strcpy(szStrCopy,pszIn);
-  return hb_listszSortIn(pplistszHead,szStrCopy,fOrder,fUnique);
+  return hb_listszSortInCopy(pplistszHead,szStrCopy,fOrder,fUnique);
 } /* of hb_listszSortInCopy */
 
 FUNDEF1(hb_llszRecType *
