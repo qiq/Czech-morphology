@@ -1,0 +1,10 @@
+#!/bin/bash
+if [ "$1" == "init" -o ! -f configure ]; then
+	libtoolize
+	aclocal -I m4
+	autoheader
+	automake --add-missing
+	autoconf
+fi
+./configure --prefix=/tmp/delme --enable-silent-rules --enable-debug
+
