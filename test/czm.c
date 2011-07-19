@@ -29,8 +29,12 @@ int main(int argc, char *argv[]) {
 			p++;
 		}
 		char *result = lemmatize_token(s, punct, 0, number, 0, 0);
-		puts(result);
-		free(result);
+		if (result) {
+			puts(result);
+			free(result);
+		} else {
+			printf("error processing: %s\n", s);
+		}
 	}
 	lemmatize_destroy();
 	return 0;
