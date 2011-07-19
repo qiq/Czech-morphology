@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <iconv.h>
 #include "hb_base.h"
 #include "hb_hash.h"
 #include "hb_cpd.h"
@@ -95,6 +96,8 @@ extern char szFormIn[];
 extern char *pszOutput;
 
 pthread_mutex_t mutex;
+iconv_t handle_ui;
+iconv_t handle_iu;
 
 // not thread safe
 int lemmatize_init(const char *prefix, int guess) {
@@ -317,6 +320,12 @@ int lemmatize_init(const char *prefix, int guess) {
 
 	hb_SetLangEnv(&(pparMain->langEnvDic),szLangDict);
 
+	/* iconv initialization */
+	handle_ui = iconv_open("iso88592//TRANSLIT//IGNORE", "utf8");
+	handle_iu = iconv_open("utf8", "iso88592");
+	if (handle_iu == (iconv_t)-1 || handle_ui == (iconv_t)-1)
+		return 65535;
+
 	free(tag_table);
 	free(unknown_rules);
 
@@ -363,13 +372,31 @@ void lemmatize_destroy() {
 	fclose(fNF);
 	fclose(fLog);
 
+	iconv_close(handle_ui);
+	iconv_close(handle_iu);
+
 	pthread_mutex_destroy(&mutex);
+}
+
+int convert(int direction, const char *src, char *dst, int maxlen) {
+	size_t srclen = strlen(src);
+	size_t dstlen = maxlen-1;
+	size_t res = iconv(direction ? handle_iu : handle_ui, &src, &srclen, &dst, &dstlen);
+	if (res == -1 || srclen != 0)
+		return 0;
+	*dst = '\0';
+	return 1;
 }
 
 int lemmatize(parRecType *ppar, int dot, int hyph, int fAbbrIn, int fNum, int fPhDot, int fForm, char *szLemmaIn);
 
 // thread safe
 char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_number, int dot_follows, int hyphen_follows) {
+	// convert utf-8 to iso-8859-2
+	char tmp[10*1024];
+	if (!convert(0, token, tmp, sizeof(tmp)-1))
+		return NULL;
+	
 	int contain_hyphen = 0;
 	int last_dot = 0;
 
@@ -380,34 +407,42 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 
 	pthread_mutex_lock(&mutex);
 	//int lemmatize(ppar,dot,hyph,fAbbrIn,fNum,fPhDot,fForm,szLemmaIn)
-	strncpy(szFormIn, token, HB_STRINGMAX-2);
+	strncpy(szFormIn, tmp, HB_STRINGMAX-2);
+	szFormIn[HB_STRINGMAX-1] = '\0';
 	char *lemma = "";
 	int rc = lemmatize(pparMain, dot_follows, hyphen_follows, is_abbr, is_number, last_dot, !is_punct, lemma);
-	char *result = NULL;
-	if (rc == 0) {
-		int first = 1;
-		result = strdup(pszOutput);
-		char *r = result;
-		char *p = result;
-		while (*p) {
-			if (*p == '<') {
-				if (!strncmp(p, "<MMl", 4)) {
-					if (first)
-						first = 0;
-					else
-						*r++ = '\t';
-				} else if (!strncmp(p, "<MMt", 4)) {
-					*r++ = ' ';
-				}
-				while (*p != '>')
-					p++;
-				p++;
-			} else {
-				*r++ = *p++;
-			}
-		}
-		*r = '\0';
+	if (rc != 0) {
+		pthread_mutex_unlock(&mutex);
+		return NULL;
 	}
+
+	int first = 1;
+	char *p = pszOutput;
+	char *r = tmp;
+	while (*p && r-tmp < sizeof(tmp)-1) {
+		if (*p == '<') {
+			if (!strncmp(p, "<MMl", 4)) {
+				if (first)
+					first = 0;
+				else
+					*r++ = '\t';
+			} else if (!strncmp(p, "<MMt", 4)) {
+				*r++ = ' ';
+			}
+			while (*p != '>')
+				p++;
+			p++;
+		} else {
+			*r++ = *p++;
+		}
+	}
+	*r = '\0';
+
 	pthread_mutex_unlock(&mutex);
-	return result;
+
+	// convert iso-8859-2 to utf-8
+	char tmp2[10*1024];
+	if (!convert(1, tmp, tmp2, sizeof(tmp2)))
+		return NULL;
+	return strdup(tmp2);
 }

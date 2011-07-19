@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.61)
-AC_INIT(czmorphology, 1.0.0, qiq@ucw.cz)
+AC_INIT(czmorphology, 1.1.0, qiq@ucw.cz)
 AC_CONFIG_AUX_DIR(config)
 AC_CONFIG_SRCDIR([config.h.in])
 AM_CONFIG_HEADER([config.h])
@@ -29,6 +29,10 @@ AC_HEADER_STDC
 # Checks for typedefs, structures, and compiler characteristics.
 
 # Checks for library functions.
+AC_CHECK_FUNC([iconv_open], [], [
+        echo "Please install libiconv."
+        exit -1
+])
 
 # Misc
 dnl Check for debug options

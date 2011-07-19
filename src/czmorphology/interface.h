@@ -1,5 +1,9 @@
-#ifndef _INTERFACE_H_
-#define _INTERFACE_H_
+#ifndef CZMORPHOLOGY_INTERFACE_H_
+#define CZMORPHOLOGY_INTERFACE_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * Initialize lemmatizer library. This method is not thread-safe.
@@ -30,5 +34,9 @@ is_number, int dot_follows, int hyphen_follows);
  * thread-safe.
  */
 void lemmatize_destroy();
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
