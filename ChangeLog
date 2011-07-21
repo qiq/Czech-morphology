@@ -2,6 +2,7 @@
 
 * Version 1.0.0 ready, basic testing done, no memory leaks should be present.
 
-2011-07-10  Miroslav Spousta  <qiq@ucw.cz>
+2011-07-21  Miroslav Spousta  <qiq@ucw.cz>
 
 * Version 1.1.0 ready, iconv support added (input/output is utf-8).
+* Speedup by using fread() instead of read() -- makes use of a cache.
