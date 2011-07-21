@@ -681,7 +681,7 @@ int
 FUNDEF4(hb_HashFileInInternal, hb_hashRecType **,pphash, char *,szFileName, int, fInv, int, fNumbering)
 {
 hb_hashRecType *phash;
-int fIn;
+FILE *fIn;
 char c, cLast; /* for reading from input file char by char */
 longint lSize; /* file size --> string size */
 longint lLines;               /* no of lines read from input */
@@ -699,8 +699,8 @@ Shortint cAlloc; /* for allocations */
 char szT[20]; /* for longint conversion */
 char *pszSaved;
 
-  fIn = hb_Open(szFileName,"rt");
-  if (fIn < 0) {
+  fIn = fopen(szFileName,"rt");
+  if (!fIn) {
     return 2;
   }
   lSize = 0;
@@ -709,7 +709,7 @@ char *pszSaved;
   lCols = 1;
   lMaxData = 0;
   lLineSize = 0;
-  while (hb_Read(fIn,(void *)&c,1) == 1) {
+  while (fread((void*)&c, 1, 1, fIn) == 1) {
     lSize++;
     if (c == 10) { /* line feed */
       if (lLineSize > lMaxData) lMaxData = lLineSize;
@@ -745,7 +745,7 @@ char *pszSaved;
   else {
     lMaxData /= 10; lMaxData *= 15; /* add 50% to max data size */
   }
-  hb_Close(fIn);
+  fclose(fIn);
   
   /**/ /* fprintf(stderr,
         "hb_hash: %s: bef HashNew: size %ld lines %ld cols %ld maxdata %ld\n",
@@ -753,8 +753,8 @@ char *pszSaved;
   phash = hb_HashNew(lLines,lSize,lMaxData);
   if (phash == NULL) return 1;
 
-  fIn = hb_Open(szFileName,"rt");
-  if (fIn < 0) {
+  fIn = fopen(szFileName,"rt");
+  if (!fIn) {
     return 2;
   }
   cAlloc = phash->lBufferMax * sizeof(char);
@@ -769,7 +769,7 @@ char *pszSaved;
   pch = NULL;
   pszKey = NULL;
   pszData = NULL;
-  while (hb_Read(fIn,(void *)&c,1) == 1) {
+  while (fread((void *)&c, 1, 1, fIn) == 1) {
     if (c == 10) { /* line feed */
       if (pch == NULL) {
         /* ignore line -- null */
@@ -852,7 +852,7 @@ char *pszSaved;
   } /* of reading file fIn */
 
   hb_Free(szLine);
-  hb_Close(fIn);
+  fclose(fIn);
   *pphash = phash;
   return 0;
 } /* of hb_HashFileInInternal */
