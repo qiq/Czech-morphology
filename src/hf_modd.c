@@ -1998,6 +1998,7 @@ char *psz;
 int iTabError;
 int iVersion;
 
+  memset(buffer, 0, 9);
   /* set input/output table: */
   /* JH 22.11.97 */ /* hh_fill_inv(); */ /* from hh_cp895.h */
   if ((iTabError = hhSetTabFillInv(pszCharSet)) > 0) { /* now from hh_cp.h */

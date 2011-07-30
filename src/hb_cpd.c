@@ -89,6 +89,7 @@ Shortint cPatMaxShort; /* pattern space, short int */
 int i1;
 char szT[2000];
 
+   memset(rgchBuffer, 0, 9);
    if ((pcpdNew = (hb_cpdRecType *) hb_LongAlloc(sizeof(hb_cpdRecType))) ==
      NULL) {
      return NULL;
