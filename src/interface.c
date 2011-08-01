@@ -382,16 +382,47 @@ int convert(int direction, const char *src, char *dst, int maxlen) {
 	size_t srclen = strlen(src);
 	size_t dstlen = maxlen-1;
 	size_t res = iconv(direction ? handle_iu : handle_ui, &src, &srclen, &dst, &dstlen);
-	if (res == -1 || srclen != 0)
+	if (res == -1 || srclen != 0 || (srclen > 0 && dstlen == 0))
 		return 0;
 	*dst = '\0';
 	return 1;
 }
 
+char *csts_entities[] = {
+	"%", "&percnt;",
+	"&", "&amp;",
+	"#", "&num;",
+	"*", "&ast;",
+	"$", "&dollar;",
+	"<", "&lt;",
+	">", "&gt;",
+	"_", "&lowbar;",
+	"[", "&lsqb;",
+	"]", "&rsqb;",
+	"|", "&verbar;",
+	"\\", "&bsol;",
+	"^", "&circ;",
+	"@", "&commat;",
+	"{", "&lcub;",
+	"}", "&rcub;",
+	"\x00E0", "&agrave",
+	// &macron;
+};
+
 int lemmatize(parRecType *ppar, int dot, int hyph, int fAbbrIn, int fNum, int fPhDot, int fForm, char *szLemmaIn);
 
 // thread safe
 char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_number, int dot_follows, int hyphen_follows) {
+	// shortcut: if punctutation, tag is always "Z:-------------"
+	// otherwise, there may be problems with <, > chars (after iconv conversion)
+	if (is_punct) {
+		len = strlen(token)+17;
+		char *result = malloc(len);
+		strcpy(result, token);
+		strcpy(result+len-17, " Z:-------------");
+		return result;
+	}
+
 	// convert utf-8 to iso-8859-2
 	char tmp[10*1024];
 	if (!convert(0, token, tmp, sizeof(tmp)-1))
