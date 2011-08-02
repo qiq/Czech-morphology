@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <iconv.h>
+#include <ctype.h>
 #include "hb_base.h"
 #include "hb_hash.h"
 #include "hb_cpd.h"
@@ -98,6 +99,8 @@ extern char *pszOutput;
 pthread_mutex_t mutex;
 iconv_t handle_ui;
 iconv_t handle_iu;
+
+int csts_decode_init();
 
 // not thread safe
 int lemmatize_init(const char *prefix, int guess) {
@@ -329,6 +332,8 @@ int lemmatize_init(const char *prefix, int guess) {
 	free(tag_table);
 	free(unknown_rules);
 
+	if (!csts_decode_init())
+		return 65534;
 	return 0;
 }
 
@@ -388,45 +393,163 @@ int convert(int direction, const char *src, char *dst, int maxlen) {
 	return 1;
 }
 
-char *csts_entities[] = {
-	"%", "&percnt;",
-	"&", "&amp;",
-	"#", "&num;",
-	"*", "&ast;",
-	"$", "&dollar;",
-	"<", "&lt;",
-	">", "&gt;",
-	"_", "&lowbar;",
-	"[", "&lsqb;",
-	"]", "&rsqb;",
-	"|", "&verbar;",
-	"\\", "&bsol;",
-	"^", "&circ;",
-	"@", "&commat;",
-	"{", "&lcub;",
-	"}", "&rcub;",
-	"\x00E0", "&agrave",
-	// &macron;
+char *csts_encode_table[256] = {
+	['%'] = "&percnt;",
+	['&'] = "&amp;",
+	['#'] = "&num;",
+	['*'] = "&ast;",
+	['$'] = "&dollar;",
+	['<'] = "&lt;",
+	['>'] = "&gt;",
+	['_'] = "&lowbar;",
+	['['] = "&lsqb;",
+	[']'] = "&rsqb;",
+	['|'] = "&verbar;",
+	['\\'] = "&bsol;",
+	['^'] = "&circ;",
+	['@'] = "&commat;",
+	['{'] = "&lcub;",
+	['}'] = "&rcub;",
 };
+//	"\x00E0", "&agrave"	-- special treatement
+//	&macron;		-- ignored
+
+int csts_encode_agrave(const char *src, char *dst, int maxlen) {
+	int encoded = 0;
+	char *last = dst+maxlen-1;
+	char *s;
+	while ((s = strstr(src, "\xC3\xA0"))) {
+		int len = s-src;
+		if (dst+len+8 >= last)
+			return 0;
+		memcpy(dst, src, len);
+		memcpy(dst+len, "&agrave;", 8);
+		dst += len+8;
+		src += len+2;
+		encoded = 1;
+	}
+	if (!encoded)
+		return 0;
+	int len = strlen(src);
+	if (dst+len+1 >= last)
+		return 0;
+	memcpy(dst, src, len+1);
+
+	return 1;
+}
+
+int csts_encode(const char *src, char *dst, int maxlen, int agrave) {
+	int encoded = 0;
+	char *last = dst+maxlen-1;
+	while (*src) {
+		char *entity = csts_encode_table[(unsigned char)*src];
+		if (entity && !(agrave && !strncmp(src, "&agrave;", strlen("&agrave;")))) {
+			int len = strlen(entity);
+			if (dst+len >= last)
+				return 0;
+			memcpy(dst, entity, len);
+			dst += len;
+			encoded = 1;
+		} else {
+			*dst++ = *src;
+			if (dst >= last)
+				return 0;
+		}
+		src++;
+	}
+	*dst = '\0';
+	return encoded;
+}
+
+// filled by csts_decode_init()
+int csts_decode_table[256];
+
+inline int hash(const char *s, int len) {
+	int c = 0;
+	while (len--)
+		c += *s++;
+	return c % 256;
+}
+
+int csts_decode_init() {
+	int i;
+	char **s = csts_encode_table;
+	memset(csts_decode_table, 0, sizeof(csts_decode_table));
+	csts_decode_table[hash("agrave", strlen("agrave"))] = 'X';
+	for (i = 0; i < 256; i++) {
+		if (s[i]) {
+			int h = hash(s[i]+1, strlen(s[i]+1)-1);
+			if (csts_decode_table[h])
+				return 0;
+			csts_decode_table[h] = i;
+		}
+	}
+	return 1;
+}
+
+int csts_decode(const char *src, char *dst, int maxlen, int agrave) {
+	char *last = dst+maxlen-1;
+	while (*src) {
+		if (*src == '&') {
+			const char *s = src+1;
+			while (*s && isalnum(*s))
+				s++;
+			if (*s != ';')
+				return 0;
+			// src+1 .. s-1 is entity
+			int h = hash(src+1, s-src-1);
+			if (agrave && csts_decode_table[h] == 'X') {
+				if (dst+1 >= last)
+					return 0;
+				*dst++ = '\xC3';
+				*dst++ = '\xA0';
+			} else if (csts_decode_table[h]) {
+				if (dst >= last)
+					return 0;
+				*dst++ = csts_decode_table[h];
+			} else {
+				return 0;
+			}
+			src = s;
+		} else {
+			*dst++ = *src;
+			if (dst >= last)
+				return 0;
+		}
+		src++;
+	}
+	*dst = '\0';
+	return 1;
+}
 
 int lemmatize(parRecType *ppar, int dot, int hyph, int fAbbrIn, int fNum, int fPhDot, int fForm, char *szLemmaIn);
 
 // thread safe
+#define MAXLEN 10*1024
 char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_number, int dot_follows, int hyphen_follows) {
-	// shortcut: if punctutation, tag is always "Z:-------------"
-	// otherwise, there may be problems with <, > chars (after iconv conversion)
-	if (is_punct) {
-		len = strlen(token)+17;
-		char *result = malloc(len);
-		strcpy(result, token);
-		strcpy(result+len-17, " Z:-------------");
-		return result;
-	}
+	char tmp1[MAXLEN];
+	char tmp2[MAXLEN];
+	char *buf1 = tmp1;
+	char *buf2 = tmp2;
+
+	// replace agrave char by &agrave;
+	int agrave = csts_encode_agrave(token, buf1, MAXLEN);
+	if (!agrave)
+		buf1 = (char*)token;
 
 	// convert utf-8 to iso-8859-2
-	char tmp[10*1024];
-	if (!convert(0, token, tmp, sizeof(tmp)-1))
+	if (!convert(0, buf1, buf2, MAXLEN-1))
 		return NULL;
+	buf1 = tmp2;
+	buf2 = tmp1;	
+
+	// replace special chars by entities
+	int encoded = csts_encode(buf1, buf2, MAXLEN, agrave);
+	if (encoded) {
+		char *s = buf1;
+		buf1 = buf2;
+		buf2 = s;
+	}
 	
 	int contain_hyphen = 0;
 	int last_dot = 0;
@@ -438,7 +561,7 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 
 	pthread_mutex_lock(&mutex);
 	//int lemmatize(ppar,dot,hyph,fAbbrIn,fNum,fPhDot,fForm,szLemmaIn)
-	strncpy(szFormIn, tmp, HB_STRINGMAX-2);
+	strncpy(szFormIn, buf1, HB_STRINGMAX-2);
 	szFormIn[HB_STRINGMAX-1] = '\0';
 	char *lemma = "";
 	int rc = lemmatize(pparMain, dot_follows, hyphen_follows, is_abbr, is_number, last_dot, !is_punct, lemma);
@@ -449,8 +572,8 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 
 	int first = 1;
 	char *p = pszOutput;
-	char *r = tmp;
-	while (*p && r-tmp < sizeof(tmp)-1) {
+	char *r = buf1;
+	while (*p && r-buf1 < MAXLEN-1) {
 		if (*p == '<') {
 			if (!strncmp(p, "<MMl", 4)) {
 				if (first)
@@ -472,8 +595,20 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 	pthread_mutex_unlock(&mutex);
 
 	// convert iso-8859-2 to utf-8
-	char tmp2[10*1024];
-	if (!convert(1, tmp, tmp2, sizeof(tmp2)))
+	if (!convert(1, buf1, buf2, MAXLEN))
 		return NULL;
-	return strdup(tmp2);
+	char *s = buf1;
+	buf1 = buf2;
+	buf2 = s;
+
+	if (encoded || agrave) {
+		if (!csts_decode(buf1, buf2, MAXLEN, agrave))
+			return NULL;
+		char *s = buf1;
+		buf1 = buf2;
+		buf2 = s;
+	}
+
+
+	return strdup(buf1);
 }
