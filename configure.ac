@@ -33,6 +33,7 @@ AC_CHECK_FUNC([iconv_open], [], [
         echo "Please install libiconv."
         exit -1
 ])
+ACX_PTHREAD()
 
 # Misc
 dnl Check for debug options

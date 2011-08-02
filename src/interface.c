@@ -84,6 +84,16 @@ typedef struct parRec {
   tlangEnvRec langEnvDic; /* language env. of dictionary, incl. prefixes */
 } parRecType;
 
+// initialize only once
+static pthread_once_t once = PTHREAD_ONCE_INIT;
+// everything is guarded by this mutex
+static pthread_mutex_t mutex;
+// stored values (so that multiple initialization with exactly the same values may succeed)
+static char *czmorphology_prefix = NULL;
+static int czmorphology_guess = 0;
+static int czmorphology_usage = 0;
+
+
 extern hb_listszRecType *hb_listszFreeHead;
 extern hb_llszRecType *hb_llszFreeHead;
 
@@ -96,15 +106,31 @@ extern FILE *fLog;
 extern char szFormIn[];
 extern char *pszOutput;
 
-pthread_mutex_t mutex;
-iconv_t handle_ui;
-iconv_t handle_iu;
+static iconv_t handle_ui;
+static iconv_t handle_iu;
 
 int csts_decode_init();
 
-// not thread safe
+void once_init() {
+	pthread_mutex_init(&mutex, NULL);
+}
+
 int lemmatize_init(const char *prefix, int guess) {
-	char *dictionary = prefix;
+	pthread_once(&once, once_init);
+	pthread_mutex_lock(&mutex);
+	if (czmorphology_prefix) {
+		if (!strcmp(prefix, czmorphology_prefix) && guess == czmorphology_guess) {
+			czmorphology_usage++;
+			pthread_mutex_unlock(&mutex);
+			return 0;	// OK, already initialized
+		}
+		pthread_mutex_unlock(&mutex);
+		return 65533;
+	}
+	czmorphology_prefix = strdup(prefix);
+	czmorphology_guess = guess;
+
+	const char *dictionary = prefix;
 	char *tag_table = malloc(strlen(prefix)+5+1);
 	strcpy(tag_table, prefix);
 	strcat(tag_table, "g.txt");
@@ -115,12 +141,11 @@ int lemmatize_init(const char *prefix, int guess) {
 		strcat(unknown_rules, "u.cpd");
 	}
 
-	pthread_mutex_init(&mutex, NULL);
-
 	*szLogName = '\0';
 
 	if (NULL == (pparMain = (parRecType *) hb_LongAlloc(sizeof(parRecType)))) {
 		//fprintf(stderr, "%s: Cannot allocate memory for parameter record\n",szPN);
+		pthread_mutex_unlock(&mutex);
 		return 204;
 	}
 
@@ -132,6 +157,7 @@ int lemmatize_init(const char *prefix, int guess) {
 
 	if (hhSetTabFillInv(pparMain->szCharSet) != 0) {
 		// fprintf(stderr,"%s: cannot init code table (code %s)\n", pparMain->szCharSet);
+		pthread_mutex_unlock(&mutex);
 		return 377;
 	}
 
@@ -188,11 +214,13 @@ int lemmatize_init(const char *prefix, int guess) {
 		pparMain->punk = (unkRecType *) hb_LongAlloc(sizeof(unkRecType));
 		if (pparMain->punk == NULL) {
 			// fprintf(stderr,"%s: cannot allocate space for unk record\n",szPN);
+			pthread_mutex_unlock(&mutex);
 			return 235;
 		}
 		pparMain->punk->pcpdUnk = hb_CpdOpen((char*)unknown_rules);
 		if (pparMain->punk->pcpdUnk == NULL) {
 			// fprintf(stderr,"%s: cannot open unknown word rules file %s\n", szPN,szT);
+			pthread_mutex_unlock(&mutex);
 			return 234;
 		}
 		/* read basic parameters here: */
@@ -207,6 +235,7 @@ int lemmatize_init(const char *prefix, int guess) {
 		int fCFL;
 		if (hb_CpdFindFirst(pparMain->punk->pcpdUnk,szKeyC, szData, HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
 			// fprintf(stderr, "%s: error in hb_CpdFindFirst(%s), key = %s\n", szPN,pparMain->punk->pcpdUnk->szFileName,szKey);
+			pthread_mutex_unlock(&mutex);
 			return 236;
 		}
 		pparMain->punk->cPrefMax = atoi(szData);
@@ -214,6 +243,7 @@ int lemmatize_init(const char *prefix, int guess) {
 		hb_CpdCvs(szKey,szKeyC);
 		if (hb_CpdFindFirst(pparMain->punk->pcpdUnk,szKeyC, szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
 			// fprintf(stderr, "%s: error in hb_CpdFindFirst(%s), key = %s\n", szPN,pparMain->punk->pcpdUnk->szFileName,szKey);
+			pthread_mutex_unlock(&mutex);
 			return 238;
 		}
 		pparMain->punk->cSuffMax = atoi(szData);
@@ -221,6 +251,7 @@ int lemmatize_init(const char *prefix, int guess) {
 		hb_CpdCvs(szKey,szKeyC);
 		if (hb_CpdFindFirst(pparMain->punk->pcpdUnk,szKeyC, szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
 			// fprintf(stderr, "%s: error in hb_CpdFindFirst(%s), key = %s\n", szPN,pparMain->punk->pcpdUnk->szFileName,szKey);
+			pthread_mutex_unlock(&mutex);
 			return 232;
 		}
 		strcpy(pparMain->punk->szLF,szData);
@@ -229,6 +260,7 @@ int lemmatize_init(const char *prefix, int guess) {
 		hb_CpdCvs(szKey,szKeyC);
 		if (hb_CpdFindFirst(pparMain->punk->pcpdUnk,szKeyC, szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
 			// fprintf(stderr, "%s: error in hb_CpdFindFirst(%s), key = %s\n", szPN,pparMain->punk->pcpdUnk->szFileName,szKey);
+			pthread_mutex_unlock(&mutex);
 			return 237;
 		}
 		pparMain->punk->cMMt = atoi(szData) + 1;
@@ -236,6 +268,7 @@ int lemmatize_init(const char *prefix, int guess) {
 		pparMain->punk->rgszMMt = (char **) hb_LongAlloc(sizeof(char *)*il);
 		if (pparMain->punk->rgszMMt == NULL) {
 			// fprintf(stderr, "%s: error cannot allocate memory (%ld items) for MMt table.\n", szPN,il);
+			pthread_mutex_unlock(&mutex);
 			return 241;
 		}
 		int iT;
@@ -247,6 +280,7 @@ int lemmatize_init(const char *prefix, int guess) {
 		hb_CpdCvs(szKey,szKeyC);
 		if (hb_CpdFindFirst(pparMain->punk->pcpdUnk,szKeyC, szData,HB_LONGSTRINGMAX-2, &iPattern, &fCFL) != 0) {
 			// fprintf(stderr, "%s: error in hb_CpdFindFirst(%s), key = %s\n", szPN,pparMain->punk->pcpdUnk->szFileName,szKey);
+			pthread_mutex_unlock(&mutex);
 			return 249;
 		}
 		pparMain->punk->cLRT = atoi(szData) + 1;
@@ -254,6 +288,7 @@ int lemmatize_init(const char *prefix, int guess) {
 		pparMain->punk->rgszLRT = (char **) hb_LongAlloc(sizeof(char *)*il);
 		if (pparMain->punk->rgszLRT == NULL) {
 			// fprintf(stderr, "%s: error cannot allocate memory (%ld items) for LRT table.\n", szPN,il);
+			pthread_mutex_unlock(&mutex);
 			return 248;
 		}
 		for (iT = 0; iT < pparMain->punk->cLRT; iT++) {
@@ -268,17 +303,21 @@ int lemmatize_init(const char *prefix, int guess) {
 	pparMain->phashInvTagTable = NULL;
 	*(pparMain->szTagTable) = HB_EOS;
 	if (!tag_table) {
-		if (pparMain->fLemmaTagUpdate || pparMain->fForceLemmaUpdate)
+		if (pparMain->fLemmaTagUpdate || pparMain->fForceLemmaUpdate) {
+			pthread_mutex_unlock(&mutex);
 			return 339;
+		}
 		*(pparMain->szTagTable) = HB_EOS;
 	} else {
 		strcpy(pparMain->szTagTable, tag_table);
 		if (hb_HashFileIn(&(pparMain->phashTagTable),pparMain->szTagTable,0) > 0) {
 			// fprintf(fLog,"%s: cannot init tag hash table %s\n", szPN,pparMain->szTagTable);
+			pthread_mutex_unlock(&mutex);
 			return 303;
 		}
 		if (hb_HashFileIn(&(pparMain->phashInvTagTable),pparMain->szTagTable,1) > 0) {
 			// fprintf(fLog,"%s: cannot init inverted tag hash table %s\n", szPN,pparMain->szTagTable);
+			pthread_mutex_unlock(&mutex);
 			return 304;
 		}
 	}
@@ -287,6 +326,7 @@ int lemmatize_init(const char *prefix, int guess) {
 	if (*(pparMain->szBaseCache) != HB_EOS) {
 		if (hb_HashFileIn(&(pparMain->phashBaseCache),pparMain->szBaseCache,0) > 0) {
 			// fprintf(fLog,"%s: cannot init base cache hash table %s\n", szPN,pparMain->szBaseCache);
+			pthread_mutex_unlock(&mutex);
 			return 302;
 		}
 	} /* base cache used */
@@ -318,6 +358,7 @@ int lemmatize_init(const char *prefix, int guess) {
 	int iHFError = hf_init(szDictionary,pparMain->szCharSet);
 	if (iHFError != 0) {
 		// fprintf(stderr, "%s: initialization of %s (codepage %s) failed (%d)\n",szPN,szDictionary, pparMain->szCharSet,iHFError);
+		pthread_mutex_unlock(&mutex);
 		return 1000+iHFError;
 	}
 
@@ -326,20 +367,33 @@ int lemmatize_init(const char *prefix, int guess) {
 	/* iconv initialization */
 	handle_ui = iconv_open("iso88592//TRANSLIT//IGNORE", "utf8");
 	handle_iu = iconv_open("utf8", "iso88592");
-	if (handle_iu == (iconv_t)-1 || handle_ui == (iconv_t)-1)
-		return 65535;
+	if (handle_iu == (iconv_t)-1 || handle_ui == (iconv_t)-1) {
+		pthread_mutex_unlock(&mutex);
+		return 65534;
+	}
 
 	free(tag_table);
 	free(unknown_rules);
 
-	if (!csts_decode_init())
-		return 65534;
+	if (!csts_decode_init()) {
+		pthread_mutex_unlock(&mutex);
+		return 65535;
+	}
+	czmorphology_usage++;
+	pthread_mutex_unlock(&mutex);
 	return 0;
 }
 
 // not thread safe
 void lemmatize_destroy() {
 	int i;
+	pthread_mutex_lock(&mutex);
+	if (--czmorphology_usage > 0) {
+		// still some users
+		pthread_mutex_unlock(&mutex);
+		return;
+	}
+
 	hf_end();
 
 	/* unknown words (guesser) shutdown */
@@ -380,7 +434,11 @@ void lemmatize_destroy() {
 	iconv_close(handle_ui);
 	iconv_close(handle_iu);
 
-	pthread_mutex_destroy(&mutex);
+	free(czmorphology_prefix);
+	czmorphology_prefix = NULL;
+	czmorphology_guess = 0;
+
+	pthread_mutex_unlock(&mutex);
 }
 
 int convert(int direction, const char *src, char *dst, int maxlen) {
@@ -532,14 +590,18 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 	char *buf1 = tmp1;
 	char *buf2 = tmp2;
 
+	pthread_mutex_lock(&mutex);
+
 	// replace agrave char by &agrave;
 	int agrave = csts_encode_agrave(token, buf1, MAXLEN);
 	if (!agrave)
 		buf1 = (char*)token;
 
 	// convert utf-8 to iso-8859-2
-	if (!convert(0, buf1, buf2, MAXLEN-1))
+	if (!convert(0, buf1, buf2, MAXLEN-1)) {
+		pthread_mutex_unlock(&mutex);
 		return NULL;
+	}
 	buf1 = tmp2;
 	buf2 = tmp1;	
 
@@ -559,7 +621,6 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 	if (*token && token[strlen(token)-1] == '.')
 		last_dot = 1;
 
-	pthread_mutex_lock(&mutex);
 	//int lemmatize(ppar,dot,hyph,fAbbrIn,fNum,fPhDot,fForm,szLemmaIn)
 	strncpy(szFormIn, buf1, HB_STRINGMAX-2);
 	szFormIn[HB_STRINGMAX-1] = '\0';
@@ -592,23 +653,25 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 	}
 	*r = '\0';
 
-	pthread_mutex_unlock(&mutex);
-
 	// convert iso-8859-2 to utf-8
-	if (!convert(1, buf1, buf2, MAXLEN))
+	if (!convert(1, buf1, buf2, MAXLEN)) {
+		pthread_mutex_unlock(&mutex);
 		return NULL;
+	}
 	char *s = buf1;
 	buf1 = buf2;
 	buf2 = s;
 
 	if (encoded || agrave) {
-		if (!csts_decode(buf1, buf2, MAXLEN, agrave))
+		if (!csts_decode(buf1, buf2, MAXLEN, agrave)) {
+			pthread_mutex_unlock(&mutex);
 			return NULL;
+		}
 		char *s = buf1;
 		buf1 = buf2;
 		buf2 = s;
 	}
-
+	pthread_mutex_unlock(&mutex);
 
 	return strdup(buf1);
 }
