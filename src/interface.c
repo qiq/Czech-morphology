@@ -621,9 +621,30 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 	if (*token && token[strlen(token)-1] == '.')
 		last_dot = 1;
 
+	// lemmatize needs 7 more chars in szFormIn (of length 200)
+	int len = strlen(buf1);
+	if (len > 200-8)
+		len = 200-8;
+	memcpy(szFormIn, buf1, len);
+	char *last = szFormIn+len;
+	*last = '\0';
+	// we delete partial entity
+	last--;
+	int semicolon = 0;
+	while (last >= szFormIn && *last != '&') {
+		if (*last == ';')
+			semicolon = 1;
+		last--;
+	}
+	if (last >= szFormIn && !semicolon) {
+		*last = '\0';
+		if (last == szFormIn) {
+			// partial entity &abcdef...\0 -> we cannot process this word
+			pthread_mutex_unlock(&mutex);
+			return NULL;
+		}
+	}
 	//int lemmatize(ppar,dot,hyph,fAbbrIn,fNum,fPhDot,fForm,szLemmaIn)
-	strncpy(szFormIn, buf1, 200-9);		// lemmatize needs 7 more chars
-	szFormIn[200-8] = '\0';
 	char *lemma = "";
 	int rc = lemmatize(pparMain, dot_follows, hyphen_follows, is_abbr, is_number, last_dot, !is_punct, lemma);
 	if (rc != 0) {
