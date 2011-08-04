@@ -622,8 +622,8 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 		last_dot = 1;
 
 	//int lemmatize(ppar,dot,hyph,fAbbrIn,fNum,fPhDot,fForm,szLemmaIn)
-	strncpy(szFormIn, buf1, HB_STRINGMAX-2);
-	szFormIn[HB_STRINGMAX-1] = '\0';
+	strncpy(szFormIn, buf1, 200-9);		// lemmatize needs 7 more chars
+	szFormIn[200-8] = '\0';
 	char *lemma = "";
 	int rc = lemmatize(pparMain, dot_follows, hyphen_follows, is_abbr, is_number, last_dot, !is_punct, lemma);
 	if (rc != 0) {
