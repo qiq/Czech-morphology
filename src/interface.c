@@ -541,8 +541,8 @@ int csts_decode_init() {
 	int i;
 	char **s = csts_encode_table;
 	memset(csts_decode_table, 0, sizeof(csts_decode_table));
-	csts_decode_table[hash("agrave", 8)] = 'X';
-	csts_decode_table[hash("mcaron", 8)] = 'Y';
+	csts_decode_table[hash("agrave", 6)] = 'X';
+	csts_decode_table[hash("mcaron", 6)] = 'Y';
 	for (i = 0; i < 256; i++) {
 		if (s[i]) {
 			int h = hash(s[i]+1, strlen(s[i]+1)-1);
