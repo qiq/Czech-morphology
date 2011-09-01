@@ -509,7 +509,7 @@ int csts_encode(const char *src, char *dst, int maxlen, int agrave) {
 	char *last = dst+maxlen-1;
 	while (*src) {
 		char *entity = csts_encode_table[(unsigned char)*src];
-		if (entity && !(agrave && !strncmp(src, "&agrave;", 8) && !strncmp(src, "&macron;", 8))) {
+		if (entity && !(agrave && (!strncmp(src, "&agrave;", 8) || !strncmp(src, "&macron;", 8)))) {
 			int len = strlen(entity);
 			if (dst+len >= last)
 				return 0;
@@ -517,9 +517,9 @@ int csts_encode(const char *src, char *dst, int maxlen, int agrave) {
 			dst += len;
 			encoded = 1;
 		} else {
-			*dst++ = *src;
 			if (dst >= last)
 				return 0;
+			*dst++ = *src;
 		}
 		src++;
 	}
@@ -565,30 +565,30 @@ int csts_decode(const char *src, char *dst, int maxlen, int agrave) {
 				return 0;
 			// src+1 .. s-1 is entity
 			int h = hash(src+1, s-src-1);
-			if (agrave) {
-				if (csts_decode_table[h] == 'X') {
-					if (dst+1 >= last)
-						return 0;
-					*dst++ = '\xC3';
-					*dst++ = '\xA0';
-				} else if (csts_decode_table[h] == 'Y') {
-					if (dst+1 >= last)
-						return 0;
-					*dst++ = '\xCB';
-					*dst++ = '\x87';
-				}
-			} else if (csts_decode_table[h]) {
+			if (!csts_decode_table[h])
+				return 0;
+			char c = csts_decode_table[h];
+			if (agrave && c == 'X') {
+				if (dst+1 >= last)
+					return 0;
+				*dst++ = '\xC3';
+				*dst++ = '\xA0';
+			} else if (agrave && c == 'Y') {
+				if (dst+1 >= last)
+					return 0;
+				*dst++ = '\xCB';
+				*dst++ = '\x87';
+			} else {
 				if (dst >= last)
 					return 0;
-				*dst++ = csts_decode_table[h];
-			} else {
+				*dst++ = c;
 				return 0;
 			}
 			src = s;
 		} else {
-			*dst++ = *src;
 			if (dst >= last)
 				return 0;
+			*dst++ = *src;
 		}
 		src++;
 	}
