@@ -582,7 +582,6 @@ int csts_decode(const char *src, char *dst, int maxlen, int agrave) {
 				if (dst >= last)
 					return 0;
 				*dst++ = c;
-				return 0;
 			}
 			src = s;
 		} else {
