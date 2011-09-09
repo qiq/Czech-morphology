@@ -1,0 +1,6 @@
+flex c4003.fl
+gcc -ggdb -O0 -DHF_UPDATE lex.yy.c hb_cpd.c hb_base.c hf_modd.c hb_hash.c hb_arg.c hh_cp.c hb_il2ca.c hf_codex.c
+
+sources:
+hb_arg.c  hb_base.c  hb_cpd.c  hb_hash.c  hb_il2ca.c  hb_proto.h  hf_codex.h  hf_modd.c  hh_cp.c  lex.yy.c
+c4023.fl  hb_arg.h  hb_base.h  hb_cpd.h  hb_hash.h  hb_il2ca.h  hf_codex.c  hf_isif.h   hf_modd.h  hh_cp.h  proto.h
