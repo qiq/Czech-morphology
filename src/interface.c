@@ -441,10 +441,30 @@ void lemmatize_destroy() {
 	pthread_mutex_unlock(&mutex);
 }
 
-int convert(int direction, const char *src, char *dst, int maxlen) {
+int convert_ui(char *src, char *dst, int maxlen) {
+	char *si = dst;
+	char *sj = dst;
 	size_t srclen = strlen(src);
 	size_t dstlen = maxlen-1;
-	size_t res = iconv(direction ? handle_iu : handle_ui, &src, &srclen, &dst, &dstlen);
+	size_t res = iconv(handle_ui, &src, &srclen, &dst, &dstlen);
+	if (res == -1 || srclen != 0 || (srclen > 0 && dstlen == 0))
+		return 0;
+	*dst = '\0';
+	// remove spaces/tabs from the result (31/2 -> 3 1/2)
+	while (*sj) {
+		if (*sj != ' ' && *sj != '\t')
+			*si++ = *sj++;
+		else
+			sj++;
+	};
+	*si = '\0';
+	return 1;
+}
+
+int convert_iu(char *src, char *dst, int maxlen) {
+	size_t srclen = strlen(src);
+	size_t dstlen = maxlen-1;
+	size_t res = iconv(handle_iu, &src, &srclen, &dst, &dstlen);
 	if (res == -1 || srclen != 0 || (srclen > 0 && dstlen == 0))
 		return 0;
 	*dst = '\0';
@@ -613,7 +633,7 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 		buf1 = (char*)token;
 
 	// convert utf-8 to iso-8859-2
-	if (!convert(0, buf1, buf2, MAXLEN-1)) {
+	if (!convert_ui(buf1, buf2, MAXLEN-1)) {
 		pthread_mutex_unlock(&mutex);
 		return NULL;
 	}
@@ -690,7 +710,7 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 	*r = '\0';
 
 	// convert iso-8859-2 to utf-8
-	if (!convert(1, buf1, buf2, MAXLEN)) {
+	if (!convert_iu(buf1, buf2, MAXLEN)) {
 		pthread_mutex_unlock(&mutex);
 		return NULL;
 	}
