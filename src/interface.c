@@ -619,7 +619,7 @@ int lemmatize(parRecType *ppar, int dot, int hyph, int fAbbrIn, int fNum, int fP
 
 // thread safe
 #define MAXLEN 10*1024
-char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_number, int dot_follows, int hyphen_follows) {
+char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_number, int dot_follows, int hyphen_follows, int *guessed) {
 	char tmp1[MAXLEN];
 	char tmp2[MAXLEN];
 	char *buf1 = tmp1;
@@ -690,14 +690,20 @@ char *lemmatize_token(const char *token, int is_punct, int is_abbr, int is_numbe
 	int first = 1;
 	char *p = pszOutput;
 	char *r = buf1;
+	if (guessed)
+		*guessed = 0;
 	while (*p && r-buf1 < MAXLEN-1) {
 		if (*p == '<') {
 			if (!strncmp(p, "<MMl", 4)) {
+				if (!strncmp(p+4, " src=\"au\"", 9) && guessed)
+					*guessed = 1;
 				if (first)
 					first = 0;
 				else
 					*r++ = '\t';
 			} else if (!strncmp(p, "<MMt", 4)) {
+				if (!strncmp(p+4, " src=\"au\"", 9) && guessed)
+					*guessed = 1;
 				*r++ = ' ';
 			}
 			while (*p != '>')

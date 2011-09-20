@@ -28,7 +28,7 @@ int main(int argc, char *argv[]) {
 				number = 1;
 			p++;
 		}
-		char *result = lemmatize_token(s, punct, 0, number, 0, 0);
+		char *result = lemmatize_token(s, punct, 0, number, 0, 0, NULL);
 		if (result) {
 			puts(result);
 			free(result);

@@ -23,11 +23,12 @@ int lemmatize_init(const char *prefix, int guess);
  * @param is_number Whether the token is in fact a number.
  * @param dot_follows Whether next token is a dot (possibly end of sentence).
  * @param hyphen_follows Whether next token is a hyphen.
+ * @param guessed In case of non-NULL, 1 is set when lemmatization was guessed.
  * @return Tab-separated list of lemmas, every lemma is followed by a list of
  * tags (separated by spaces).
  */
 char *lemmatize_token(const char *token, int is_punct, int is_abbr, int
-is_number, int dot_follows, int hyphen_follows);
+is_number, int dot_follows, int hyphen_follows, int *guessed);
 
 /**
  * Deallocates all memory and finishes lemmatizer. This method is not
