@@ -6,5 +6,5 @@ if [ "$1" == "init" -o ! -f configure ]; then
 	automake --add-missing
 	autoconf
 fi
-./configure --prefix=/home/qiq/bin --enable-silent-rules --enable-debug
+./configure --prefix=$HOME/bin --enable-silent-rules --enable-debug
 
