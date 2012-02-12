@@ -1,0 +1,21 @@
+czmorphology is a shared library to lemmatize/analyze words. It is a refactored
+code of Jan Hajic's binary and requires original data files from the binary
+distribution: *{ae.cpd,au.cpd,ag.txt,aw.cpd}, which is available e.g. in the
+PDT 2.0 (http://ufal.mff.cuni.cz/pdt2.0/). The output is equivalent to the
+output of the original binary distribution.
+
+The interface is quite simple:
+
+https://github.com/qiq/Czech-morphology/blob/master/src/czmorphology/interface.h
+
+Main benefits compared to the original code:
+
+- shared library code
+- 64-bit compatible
+- no memory leaks
+- faster initialization
+- UTF-8 input/output
+- thread safety (only one thread can lemmatize a word at tha same time, though)
+- output compatible with
+
+In order to compile/use it, configure; make; make install should be sufficient.
